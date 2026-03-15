@@ -16,3 +16,7 @@ make_output.txt
 *.o
 *.obj
 
+# Logs and temp
+build_log.txt
+windeployqt_help.txt
+

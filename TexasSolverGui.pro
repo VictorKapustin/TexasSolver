@@ -56,8 +56,14 @@ QMAKE_CXXFLAGS += -fopenmp
 QMAKE_LFLAGS += -fopenmp
 }
 
-QMAKE_CXXFLAGS_RELEASE *= -O2
+QMAKE_CXXFLAGS_RELEASE -= -O2
+QMAKE_CXXFLAGS_RELEASE *= -O3 -march=native
+QMAKE_LFLAGS_RELEASE -= -flto
 QMAKE_LFLAGS += -v
+
+win32: CONFIG(release, debug|release) {
+    QMAKE_POST_LINK += $$quote($$shell_path($$PWD/deploy_assets.bat) $$shell_path(release/TexasSolverGui.exe))
+}
 
 SOURCES += \
     main.cpp \

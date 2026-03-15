@@ -9,33 +9,39 @@ This guide explains how to build the `TexasSolverGui.exe` from the command line 
 
 ## Build Steps
 
-1. Open the **Qt Command Prompt** (or a standard terminal where Qt and MinGW are in the `PATH`).
+1. Open a terminal and ensure Qt and MinGW are in your `PATH`:
+   ```powershell
+   $env:PATH = "C:\Qt\5.15.2\mingw81_64\bin;C:\Qt\Tools\mingw810_64\bin;" + $env:PATH
+   ```
 2. Navigate to the project root directory:
    ```cmd
    cd c:\TexasSolver
    ```
-3. Generate the Makefile in release configuration using `qmake`:
+3. Generate the Makefile in release configuration:
    ```cmd
    qmake TexasSolverGui.pro "CONFIG+=release"
    ```
-4. Build the executable using `mingw32-make`:
+4. Build the executable using multiple cores (e.g., `-j8`) for speed:
    ```cmd
-   mingw32-make release
+   mingw32-make release -j8
    ```
-   *(Note: This might take a few minutes as it recompiles the source code).*
 
-5. Once completed successfully, the final `TexasSolverGui.exe` will be located in the `release\` folder.
+5. The final `TexasSolverGui.exe` will be in the `release\` folder.
 
 ## Deployment (Standalone Package)
 
-To distribute the executable or run it without Qt installed:
-1. Create a `deploy` folder (if it doesn't exist).
-2. Copy `release\TexasSolverGui.exe` to the `deploy` folder.
-3. Run the Qt deployment tool to generate the necessary `.dll` files next to the executable:
+To ensure the app runs with all optimizations and multi-threading (OpenMP) support:
+
+1. Create a `deploy` folder and copy the executable:
+   ```cmd
+   mkdir deploy
+   copy release\TexasSolverGui.exe deploy\
+   ```
+2. Run the Qt deployment tool:
    ```cmd
    windeployqt deploy\TexasSolverGui.exe
    ```
-4. Because the solver uses OpenMP (`-fopenmp`), `windeployqt` might miss the GNU OpenMP library. You must manually copy it from your MinGW `bin` directory:
+3. **Manually copy the OpenMP library** (required for the solver speed):
    ```cmd
    copy C:\Qt\Tools\mingw810_64\bin\libgomp-1.dll deploy\
    ```
