@@ -44,7 +44,8 @@ public:
             float accuracy,
             bool use_isomorphism,
             int use_halffloats,
-            int threads
+            int threads,
+            bool profile_enabled = false
             );
     void stop();
     long long estimate_tree_memory(QString range1,QString range2,QString board);

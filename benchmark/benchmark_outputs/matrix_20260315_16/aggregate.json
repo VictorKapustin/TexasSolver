@@ -1,0 +1,9 @@
+﻿{
+    "threads":  16,
+    "runs":  3,
+    "median_solve_wall_ms":  181849,
+    "avg_solve_wall_ms":  178141,
+    "median_iteration":  250,
+    "median_exploitability":  0.297149,
+    "median_best_response_ms":  602.3116
+}

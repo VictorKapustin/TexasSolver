@@ -7,8 +7,23 @@
 #include <QtCore>
 #include <QObject>
 #include <QTranslator>
+#include <chrono>
 
 //#define DEBUG;
+
+namespace {
+uint64_t steadyNowNs() {
+    return static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()
+            ).count()
+    );
+}
+
+double nsToMs(uint64_t ns) {
+    return static_cast<double>(ns) / 1000000.0;
+}
+}
 
 PCfrSolver::~PCfrSolver(){
     //cout << "Pcfr destroyed" << endl;
@@ -16,7 +31,8 @@ PCfrSolver::~PCfrSolver(){
 
 PCfrSolver::PCfrSolver(shared_ptr<GameTree> tree, vector<PrivateCards> range1, vector<PrivateCards> range2,
                      vector<int> initial_board, shared_ptr<Compairer> compairer, Deck deck, int iteration_number, bool debug,
-                     int print_interval, string logfile, string trainer, Solver::MonteCarolAlg monteCarolAlg,int warmup,float accuracy,bool use_isomorphism,int use_halffloats,int num_threads) :Solver(tree){
+                     int print_interval, string logfile, string trainer, Solver::MonteCarolAlg monteCarolAlg,int warmup,
+                     float accuracy,bool use_isomorphism,int use_halffloats,int num_threads,bool profile_enabled) :Solver(tree){
     this->initial_board = initial_board;
     this->initial_board_long = Card::boardInts2long(initial_board);
     this->logfile = logfile;
@@ -50,6 +66,7 @@ PCfrSolver::PCfrSolver(shared_ptr<GameTree> tree, vector<PrivateCards> range1, v
     this->print_interval = print_interval;
     this->monteCarolAlg = monteCarolAlg;
     this->accuracy = accuracy;
+    this->profile_enabled = profile_enabled;
     if(num_threads == -1){
         num_threads = omp_get_num_procs();
     }
@@ -57,6 +74,7 @@ PCfrSolver::PCfrSolver(shared_ptr<GameTree> tree, vector<PrivateCards> range1, v
     this->num_threads = num_threads;
     this->distributing_task = false;
     omp_set_num_threads(this->num_threads);
+    this->benchmark_thread_stats = vector<BenchmarkThreadStats>(this->num_threads > 0 ? this->num_threads : 1);
     setTrainable(this->tree->getRoot());
     this->root_round = this->tree->getRoot()->getRound();
     if(this->root_round == GameTreeNode::GameRound::PREFLOP){
@@ -69,6 +87,51 @@ PCfrSolver::PCfrSolver(shared_ptr<GameTree> tree, vector<PrivateCards> range1, v
         // do not use multithread in river, really not necessary
         this->split_round = GameTreeNode::GameRound::PREFLOP;
     }
+}
+
+PCfrSolver::BenchmarkThreadStats& PCfrSolver::currentBenchmarkThreadStats() {
+    return this->benchmark_thread_stats[omp_in_parallel() ? omp_get_thread_num() : 0];
+}
+
+void PCfrSolver::resetBenchmarkThreadStats() {
+    for(BenchmarkThreadStats& one_stats : this->benchmark_thread_stats){
+        one_stats = BenchmarkThreadStats();
+    }
+}
+
+json PCfrSolver::collectBenchmarkStatsJson() const {
+    BenchmarkThreadStats total;
+    for(const BenchmarkThreadStats& one_stats : this->benchmark_thread_stats){
+        total.action_nodes += one_stats.action_nodes;
+        total.chance_nodes += one_stats.chance_nodes;
+        total.showdown_nodes += one_stats.showdown_nodes;
+        total.terminal_nodes += one_stats.terminal_nodes;
+        total.strategy_fetch_ns += one_stats.strategy_fetch_ns;
+        total.regret_update_ns += one_stats.regret_update_ns;
+        total.ev_update_ns += one_stats.ev_update_ns;
+        total.chance_setup_ns += one_stats.chance_setup_ns;
+        total.chance_merge_ns += one_stats.chance_merge_ns;
+        total.showdown_ns += one_stats.showdown_ns;
+        total.terminal_ns += one_stats.terminal_ns;
+    }
+
+    json retval;
+    retval["node_counts"] = {
+            {"action", total.action_nodes},
+            {"chance", total.chance_nodes},
+            {"showdown", total.showdown_nodes},
+            {"terminal", total.terminal_nodes}
+    };
+    retval["timings_ms"] = {
+            {"strategy_fetch", nsToMs(total.strategy_fetch_ns)},
+            {"regret_update", nsToMs(total.regret_update_ns)},
+            {"ev_update", nsToMs(total.ev_update_ns)},
+            {"chance_setup", nsToMs(total.chance_setup_ns)},
+            {"chance_merge", nsToMs(total.chance_merge_ns)},
+            {"showdown_eval", nsToMs(total.showdown_ns)},
+            {"terminal_eval", nsToMs(total.terminal_ns)}
+    };
+    return retval;
 }
 
 const vector<PrivateCards> &PCfrSolver::playerHands(int player) {
@@ -228,6 +291,10 @@ vector<float> PCfrSolver::cfr(int player, shared_ptr<GameTreeNode> node, const v
 vector<float>
 PCfrSolver::chanceUtility(int player, shared_ptr<ChanceNode> node, const vector<float> &reach_probs, int iter,
                          uint64_t current_board,int deal) {
+    BenchmarkThreadStats* benchmark_stats = this->profile_enabled ? &this->currentBenchmarkThreadStats() : nullptr;
+    if(benchmark_stats != nullptr){
+        benchmark_stats->chance_nodes += 1;
+    }
     vector<Card>& cards = this->deck.getCards();
     //float[] cardWeights = getCardsWeights(player,reach_probs[1 - player],current_board);
 
@@ -288,6 +355,7 @@ PCfrSolver::chanceUtility(int player, shared_ptr<ChanceNode> node, const vector<
     vector<int> valid_cards;
     valid_cards.reserve(node->getCards().size());
 
+    uint64_t chance_setup_start = this->profile_enabled ? steadyNowNs() : 0;
     for(std::size_t card = 0;card < node->getCards().size();card ++) {
         shared_ptr<GameTreeNode> one_child = node->getChildren();
         Card *one_card = const_cast<Card *>(&(node->getCards()[card]));
@@ -297,9 +365,14 @@ PCfrSolver::chanceUtility(int player, shared_ptr<ChanceNode> node, const vector<
         if (this->color_iso_offset[deal][one_card->getCardInt() % 4] < 0) continue;
         valid_cards.push_back(card);
     }
+    if(benchmark_stats != nullptr){
+        benchmark_stats->chance_setup_ns += steadyNowNs() - chance_setup_start;
+    }
 
     #pragma omp parallel for schedule(static)
     for(std::size_t valid_ind = 0;valid_ind < valid_cards.size();valid_ind++) {
+        BenchmarkThreadStats* thread_stats = this->profile_enabled ? &this->currentBenchmarkThreadStats() : nullptr;
+        uint64_t branch_setup_start = this->profile_enabled ? steadyNowNs() : 0;
         int card = valid_cards[valid_ind];
         shared_ptr<GameTreeNode> one_child = node->getChildren();
         Card *one_card = const_cast<Card *>(&(node->getCards()[card]));
@@ -354,6 +427,9 @@ PCfrSolver::chanceUtility(int player, shared_ptr<ChanceNode> node, const vector<
         } else{
             throw runtime_error(tfm::format("deal out of range : %s ",deal));
         }
+        if(thread_stats != nullptr){
+            thread_stats->chance_setup_ns += steadyNowNs() - branch_setup_start;
+        }
         if(this->distributing_task && node->getRound() == this->split_round) {
             results[one_card->getNumberInDeckInt()] = vector<float>(this->ranges[player].size());
             //TaskParams taskParams = TaskParams();
@@ -363,6 +439,7 @@ PCfrSolver::chanceUtility(int player, shared_ptr<ChanceNode> node, const vector<
         }
     }
 
+    uint64_t chance_merge_start = this->profile_enabled ? steadyNowNs() : 0;
     for(std::size_t card = 0;card < node->getCards().size();card ++) {
         Card *one_card = const_cast<Card *>(&(node->getCards()[card]));
         vector<float> child_utility;
@@ -392,6 +469,9 @@ PCfrSolver::chanceUtility(int player, shared_ptr<ChanceNode> node, const vector<
                 chance_utility[i] += child_utility[i] * multiplier[card];
         }
     }
+    if(benchmark_stats != nullptr){
+        benchmark_stats->chance_merge_ns += steadyNowNs() - chance_merge_start;
+    }
 
 #ifdef DEBUG
     if(this->monteCarolAlg == MonteCarolAlg::PUBLIC) {
@@ -407,6 +487,10 @@ PCfrSolver::chanceUtility(int player, shared_ptr<ChanceNode> node, const vector<
 vector<float>
 PCfrSolver::actionUtility(int player, shared_ptr<ActionNode> node, const vector<float> &reach_probs, int iter,
                          uint64_t current_board,int deal) {
+    BenchmarkThreadStats* benchmark_stats = this->profile_enabled ? &this->currentBenchmarkThreadStats() : nullptr;
+    if(benchmark_stats != nullptr){
+        benchmark_stats->action_nodes += 1;
+    }
     int oppo = 1 - player;
     const vector<PrivateCards>& node_player_private_cards = this->ranges[node->getPlayer()];
 
@@ -425,6 +509,7 @@ PCfrSolver::actionUtility(int player, shared_ptr<ActionNode> node, const vector<
         trainable = node->getTrainable(deal);
     }
      */
+    uint64_t strategy_fetch_start = this->profile_enabled ? steadyNowNs() : 0;
     trainable = node->getTrainable(deal,true,this->use_halffloats);
 
 #ifdef DEBUG
@@ -434,6 +519,9 @@ PCfrSolver::actionUtility(int player, shared_ptr<ActionNode> node, const vector<
 #endif
 
     const vector<float> current_strategy = trainable->getcurrentStrategy();
+    if(benchmark_stats != nullptr){
+        benchmark_stats->strategy_fetch_ns += steadyNowNs() - strategy_fetch_start;
+    }
 #ifdef DEBUG
     if (current_strategy.size() != actions.size() * node_player_private_cards.size()) {
         node->printHistory();
@@ -521,7 +609,11 @@ PCfrSolver::actionUtility(int player, shared_ptr<ActionNode> node, const vector<
 
         if(!this->distributing_task && !this->collecting_statics) {
             if (iter > this->warmup) {
+                uint64_t regret_update_start = this->profile_enabled ? steadyNowNs() : 0;
                 trainable->updateRegrets(regrets, iter + 1, reach_probs);
+                if(benchmark_stats != nullptr){
+                    benchmark_stats->regret_update_ns += steadyNowNs() - regret_update_start;
+                }
             }/*else if(iter < this->warmup){
             vector<int> deals = this->getAllAbstractionDeal(deal);
             shared_ptr<Trainable> one_trainable = node->getTrainable(deals[0]);
@@ -531,6 +623,7 @@ PCfrSolver::actionUtility(int player, shared_ptr<ActionNode> node, const vector<
                 // iter == this->warmup
                 vector<int> deals = this->getAllAbstractionDeal(deal);
                 shared_ptr<Trainable> standard_trainable = nullptr;
+                uint64_t regret_update_start = this->profile_enabled ? steadyNowNs() : 0;
                 for (int one_deal : deals) {
                     shared_ptr<Trainable> one_trainable = node->getTrainable(one_deal,true,this->use_halffloats);
                     if (standard_trainable == nullptr) {
@@ -539,6 +632,9 @@ PCfrSolver::actionUtility(int player, shared_ptr<ActionNode> node, const vector<
                     } else {
                         one_trainable->copyStrategy(standard_trainable);
                     }
+                }
+                if(benchmark_stats != nullptr){
+                    benchmark_stats->regret_update_ns += steadyNowNs() - regret_update_start;
                 }
             }
         }
@@ -580,7 +676,11 @@ PCfrSolver::actionUtility(int player, shared_ptr<ActionNode> node, const vector<
                 }
             }
             // TODO if evs contains nan what should we do?
+            uint64_t ev_update_start = this->profile_enabled ? steadyNowNs() : 0;
             trainable->setEv(evs);
+            if(benchmark_stats != nullptr){
+                benchmark_stats->ev_update_ns += steadyNowNs() - ev_update_start;
+            }
         }
 
     }
@@ -591,6 +691,11 @@ PCfrSolver::actionUtility(int player, shared_ptr<ActionNode> node, const vector<
 vector<float>
 PCfrSolver::showdownUtility(int player, shared_ptr<ShowdownNode> node, const vector<float> &reach_probs,
                            int iter, uint64_t current_board,int deal) {
+    BenchmarkThreadStats* benchmark_stats = this->profile_enabled ? &this->currentBenchmarkThreadStats() : nullptr;
+    uint64_t showdown_start = this->profile_enabled ? steadyNowNs() : 0;
+    if(benchmark_stats != nullptr){
+        benchmark_stats->showdown_nodes += 1;
+    }
     // player win时候player的收益，player lose的时候收益明显为-player_payoff
     int oppo = 1 - player;
     float win_payoff = node->get_payoffs(ShowdownNode::ShowDownResult::NOTTIE,player,player);
@@ -643,12 +748,20 @@ PCfrSolver::showdownUtility(int player, shared_ptr<ShowdownNode> node, const vec
                                                       - card_losssum[one_player_comb.private_cards.card2]
                                                      ) * lose_payoff;
     }
+    if(benchmark_stats != nullptr){
+        benchmark_stats->showdown_ns += steadyNowNs() - showdown_start;
+    }
     return payoffs;
 }
 
 vector<float>
 PCfrSolver::terminalUtility(int player, shared_ptr<TerminalNode> node, const vector<float> &reach_prob, int iter,
                            uint64_t current_board,int deal) {
+    BenchmarkThreadStats* benchmark_stats = this->profile_enabled ? &this->currentBenchmarkThreadStats() : nullptr;
+    uint64_t terminal_start = this->profile_enabled ? steadyNowNs() : 0;
+    if(benchmark_stats != nullptr){
+        benchmark_stats->terminal_nodes += 1;
+    }
     float player_payoff = node->get_payoffs()[player];
 
     int oppo = 1 - player;
@@ -686,6 +799,9 @@ PCfrSolver::terminalUtility(int player, shared_ptr<TerminalNode> node, const vec
         );
     }
 
+    if(benchmark_stats != nullptr){
+        benchmark_stats->terminal_ns += steadyNowNs() - terminal_start;
+    }
     return payoffs;
 }
 
@@ -777,18 +893,54 @@ void PCfrSolver::train() {
 
     BestResponse br = BestResponse(player_privates,this->player_number,this->pcm,this->rrm,this->deck,this->debug,this->color_iso_offset,this->split_round,this->num_threads,this->use_halffloats);
 
-    br.printExploitability(tree->getRoot(), 0, tree->getRoot()->getPot(), initial_board_long);
-
     vector<vector<float>> reach_probs = this->getReachProbs();
     ofstream fileWriter;
-    if(!this->logfile.empty())fileWriter.open(this->logfile);
+    if(!this->logfile.empty()){
+        if(this->profile_enabled){
+            fileWriter.open(this->logfile, ios::out | ios::app);
+        }else{
+            fileWriter.open(this->logfile);
+        }
+    }
+
+    if(this->profile_enabled && !this->logfile.empty()){
+        json session_meta;
+        session_meta["type"] = "solver_session";
+        session_meta["threads"] = this->num_threads;
+        session_meta["iteration_limit"] = this->iteration_number;
+        session_meta["print_interval"] = this->print_interval;
+        session_meta["warmup"] = this->warmup;
+        session_meta["accuracy_target"] = this->accuracy;
+        session_meta["use_isomorphism"] = this->use_isomorphism;
+        session_meta["use_halffloats"] = this->use_halffloats;
+        session_meta["range_sizes"] = {this->range1.size(), this->range2.size()};
+        session_meta["root_round"] = GameTreeNode::gameRound2int(this->root_round);
+        fileWriter << session_meta << endl;
+    }
+
+    uint64_t initial_br_start = steadyNowNs();
+    float initial_exploitability = br.printExploitability(tree->getRoot(), 0, tree->getRoot()->getPot(), initial_board_long);
+    uint64_t initial_br_ns = steadyNowNs() - initial_br_start;
+    if(this->profile_enabled && !this->logfile.empty()){
+        json initial_event;
+        initial_event["type"] = "initial_best_response";
+        initial_event["iteration"] = 0;
+        initial_event["exploitability"] = initial_exploitability;
+        initial_event["best_response_ms"] = nsToMs(initial_br_ns);
+        fileWriter << initial_event << endl;
+    }
 
     uint64_t begintime = timeSinceEpochMillisec();
     uint64_t endtime = timeSinceEpochMillisec();
+    uint64_t solve_start_ns = steadyNowNs();
 
     for(int i = 0;i < this->iteration_number;i++){
+        uint64_t iteration_start_ns = steadyNowNs();
+        double player_cfr_ms[2] = {0.0, 0.0};
+        this->resetBenchmarkThreadStats();
         for(int player_id = 0;player_id < this->player_number;player_id ++) {
             this->round_deal = vector<int>{-1,-1,-1,-1};
+            uint64_t player_cfr_start = steadyNowNs();
             //#pragma omp parallel
             {
                 //#pragma omp single
@@ -798,18 +950,32 @@ void PCfrSolver::train() {
                     //throw runtime_error("returning...");
                 }
             }
+            player_cfr_ms[player_id] = nsToMs(steadyNowNs() - player_cfr_start);
         }
+        double best_response_ms = 0.0;
+        float expliotibility = 0.0f;
         if( (i % this->print_interval == 0 && i != 0 && i >= this->warmup) || this->nowstop) {
             endtime = timeSinceEpochMillisec();
             long time_ms = endtime - begintime;
             qDebug().noquote() << "-------------------";
-            float expliotibility = br.printExploitability(tree->getRoot(), i + 1, tree->getRoot()->getPot(), initial_board_long);
+            uint64_t best_response_start = steadyNowNs();
+            expliotibility = br.printExploitability(tree->getRoot(), i + 1, tree->getRoot()->getPot(), initial_board_long);
+            best_response_ms = nsToMs(steadyNowNs() - best_response_start);
             qDebug().noquote() << QObject::tr("time used: ") << float(time_ms) / 1000 << QObject::tr(" second.");
             if(!this->logfile.empty()){
                 json jo;
+                jo["type"] = "iteration_summary";
                 jo["iteration"] = i;
                 jo["exploitibility"] = expliotibility;
                 jo["time_ms"] = time_ms;
+                if(this->profile_enabled){
+                    jo["iteration_total_ms"] = nsToMs(steadyNowNs() - iteration_start_ns);
+                    jo["player_cfr_ms"] = {player_cfr_ms[0], player_cfr_ms[1]};
+                    jo["best_response_ms"] = best_response_ms;
+                    json benchmark_json = this->collectBenchmarkStatsJson();
+                    jo["solver_profile"] = benchmark_json["timings_ms"];
+                    jo["node_counts"] = benchmark_json["node_counts"];
+                }
                 fileWriter << jo << endl;
             }
             if(expliotibility <= this->accuracy){
@@ -820,11 +986,23 @@ void PCfrSolver::train() {
                 break;
             }
             //begintime = timeSinceEpochMillisec();
+        }else if(this->profile_enabled && !this->logfile.empty()){
+            json iteration_event;
+            iteration_event["type"] = "iteration_profile";
+            iteration_event["iteration"] = i;
+            iteration_event["iteration_total_ms"] = nsToMs(steadyNowNs() - iteration_start_ns);
+            iteration_event["player_cfr_ms"] = {player_cfr_ms[0], player_cfr_ms[1]};
+            json benchmark_json = this->collectBenchmarkStatsJson();
+            iteration_event["solver_profile"] = benchmark_json["timings_ms"];
+            iteration_event["node_counts"] = benchmark_json["node_counts"];
+            fileWriter << iteration_event << endl;
         }
     }
 
     qDebug().noquote() << QObject::tr("collecting statics");
+    uint64_t collect_statics_start = steadyNowNs();
     this->collecting_statics = true;
+    this->resetBenchmarkThreadStats();
     for(int player_id = 0;player_id < this->player_number;player_id ++) {
         this->round_deal = vector<int>{-1,-1,-1,-1};
         //#pragma omp parallel
@@ -839,6 +1017,16 @@ void PCfrSolver::train() {
     this->collecting_statics = false;
     this->statics_collected = true;
     qDebug().noquote() << QObject::tr("statics collected");
+    if(this->profile_enabled && !this->logfile.empty()){
+        json final_event;
+        final_event["type"] = "final_statics";
+        final_event["collect_statics_ms"] = nsToMs(steadyNowNs() - collect_statics_start);
+        final_event["solve_total_ms"] = nsToMs(steadyNowNs() - solve_start_ns);
+        json benchmark_json = this->collectBenchmarkStatsJson();
+        final_event["solver_profile"] = benchmark_json["timings_ms"];
+        final_event["node_counts"] = benchmark_json["node_counts"];
+        fileWriter << final_event << endl;
+    }
 
     if(!this->logfile.empty()) {
         fileWriter.flush();

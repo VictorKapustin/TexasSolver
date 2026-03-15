@@ -8,9 +8,11 @@
 #include <vector>
 #include <iostream>
 #include <fstream>
+#include "include/json.hpp"
 #include "include/runtime/PokerSolver.h"
 
 using namespace std;
+using json = nlohmann::json;
 class CommandLineTool{
 public:
     CommandLineTool(string mode,string resource_dir);
@@ -42,7 +44,11 @@ private:
     int use_isomorphism=0;
     int print_interval=10;
     int dump_rounds = 1;
+    bool profile_mode = false;
+    string log_file = "tmp_log.txt";
+    long long last_build_tree_ms = 0;
     shared_ptr<GameTreeBuildingSettings> gtbs;
+    void writeLogEvent(const json& log_event,bool truncate = false);
 };
 
 #endif //BINDSOLVER_COMMANDLINETOOL_H

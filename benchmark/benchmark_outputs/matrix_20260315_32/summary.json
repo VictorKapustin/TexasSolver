@@ -1,0 +1,47 @@
+﻿[
+    {
+        "threads":  32,
+        "run":  1,
+        "iteration":  250,
+        "exploitability":  0.29714915156364441,
+        "solve_wall_ms":  174696,
+        "total_elapsed_ms":  175174,
+        "best_response_ms":  551.189,
+        "final_action_nodes":  532121,
+        "final_chance_nodes":  5290,
+        "final_showdown_nodes":  568252,
+        "final_terminal_nodes":  366678,
+        "log_file":  "C:\\TexasSolver\\benchmark\\benchmark_outputs\\matrix_20260315_32\\t32_run1.jsonl",
+        "result_file":  "C:\\TexasSolver\\benchmark\\benchmark_outputs\\matrix_20260315_32\\t32_run1_result.json"
+    },
+    {
+        "threads":  32,
+        "run":  2,
+        "iteration":  250,
+        "exploitability":  0.29714915156364441,
+        "solve_wall_ms":  170569,
+        "total_elapsed_ms":  171061,
+        "best_response_ms":  551.9096,
+        "final_action_nodes":  532070,
+        "final_chance_nodes":  5290,
+        "final_showdown_nodes":  568290,
+        "final_terminal_nodes":  366635,
+        "log_file":  "C:\\TexasSolver\\benchmark\\benchmark_outputs\\matrix_20260315_32\\t32_run2.jsonl",
+        "result_file":  "C:\\TexasSolver\\benchmark\\benchmark_outputs\\matrix_20260315_32\\t32_run2_result.json"
+    },
+    {
+        "threads":  32,
+        "run":  3,
+        "iteration":  250,
+        "exploitability":  0.29714915156364441,
+        "solve_wall_ms":  175956,
+        "total_elapsed_ms":  176426,
+        "best_response_ms":  553.8505,
+        "final_action_nodes":  532094,
+        "final_chance_nodes":  5290,
+        "final_showdown_nodes":  568243,
+        "final_terminal_nodes":  366649,
+        "log_file":  "C:\\TexasSolver\\benchmark\\benchmark_outputs\\matrix_20260315_32\\t32_run3.jsonl",
+        "result_file":  "C:\\TexasSolver\\benchmark\\benchmark_outputs\\matrix_20260315_32\\t32_run3_result.json"
+    }
+]

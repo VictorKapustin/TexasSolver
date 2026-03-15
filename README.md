@@ -48,6 +48,8 @@ Piosolver and my TexasSolver(console version) run use the same settings (spr=10,
 
 The compare image of their results is  [here](benchmark/benchmark_outputs/result_compair.png). As you can see their result are very close.
 
+For the extended profiling benchmark and JSONL log format, see [benchmark/BENCHMARK.md](benchmark/BENCHMARK.md).
+
 # License
 
 [GNU AGPL v3](https://www.gnu.org/licenses/agpl-3.0.en.html)

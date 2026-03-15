@@ -17,6 +17,7 @@
 #include "include/tools/utils.h"
 #include <queue>
 #include <optional>
+#include <cstdint>
 /*
 template<typename T>
 class ThreadsafeQueue {
@@ -74,6 +75,20 @@ struct TaskParams{
 
 class PCfrSolver:public Solver {
 public:
+    struct BenchmarkThreadStats {
+        uint64_t action_nodes = 0;
+        uint64_t chance_nodes = 0;
+        uint64_t showdown_nodes = 0;
+        uint64_t terminal_nodes = 0;
+        uint64_t strategy_fetch_ns = 0;
+        uint64_t regret_update_ns = 0;
+        uint64_t ev_update_ns = 0;
+        uint64_t chance_setup_ns = 0;
+        uint64_t chance_merge_ns = 0;
+        uint64_t showdown_ns = 0;
+        uint64_t terminal_ns = 0;
+    };
+
     PCfrSolver(shared_ptr<GameTree> tree,
             vector<PrivateCards> range1 ,
             vector<PrivateCards> range2,
@@ -90,7 +105,8 @@ public:
             float accuracy,
             bool use_isomorphism,
             int use_halffloats,
-            int num_threads
+            int num_threads,
+            bool profile_enabled = false
     );
     ~PCfrSolver();
     void train() override;
@@ -129,10 +145,15 @@ private:
     bool use_isomorphism;
     int use_halffloats;
     bool nowstop = false;
+    bool profile_enabled = false;
+    vector<BenchmarkThreadStats> benchmark_thread_stats;
 
     const vector<PrivateCards>& playerHands(int player);
     vector<vector<float>> getReachProbs();
     static vector<PrivateCards> noDuplicateRange(const vector<PrivateCards>& private_range,uint64_t board_long);
+    BenchmarkThreadStats& currentBenchmarkThreadStats();
+    void resetBenchmarkThreadStats();
+    json collectBenchmarkStatsJson() const;
     void setTrainable(shared_ptr<GameTreeNode> root);
     vector<float> cfr(int player, shared_ptr<GameTreeNode> node, const vector<float>& reach_probs, int iter, uint64_t current_board,int deal);
     vector<int> getAllAbstractionDeal(int deal);

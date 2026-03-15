@@ -56,6 +56,23 @@ CommandLineTool::CommandLineTool(string mode,string resource_dir) {
      */
 }
 
+void CommandLineTool::writeLogEvent(const json& log_event,bool truncate) {
+    if(this->log_file.empty()){
+        return;
+    }
+    ofstream log_writer;
+    if(truncate){
+        log_writer.open(this->log_file, ios::out | ios::trunc);
+    }else{
+        log_writer.open(this->log_file, ios::out | ios::app);
+    }
+    if(!log_writer.fail()){
+        log_writer << log_event << endl;
+        log_writer.flush();
+        log_writer.close();
+    }
+}
+
 void CommandLineTool::startWorking() {
     string input_line;
     while(cin) {
@@ -91,6 +108,9 @@ void split(const string& s, char c,
 
 
 void CommandLineTool::processCommand(string input) {
+    if (input.find_first_not_of(" \t\r\n") == string::npos) {
+        return;
+    }
     vector<string> contents;
     split(input,' ',contents);
     if(contents.size() == 0) contents = {input};
@@ -146,8 +166,14 @@ void CommandLineTool::processCommand(string input) {
         this->allin_threshold = stof(paramstr);
     }else if(command == "set_thread_num"){
         this->thread_number = stoi(paramstr);
+    }else if(command == "set_profile_mode"){
+        this->profile_mode = stoi(paramstr) != 0;
+    }else if(command == "set_log_file"){
+        this->log_file = paramstr;
     }else if(command == "build_tree"){
+        uint64_t build_tree_start = timeSinceEpochMillisec();
         this->ps.build_game_tree(oop_commit,ip_commit,current_round,raise_limit,small_blind,big_blind,stack,*gtbs.get(),allin_threshold);
+        this->last_build_tree_ms = timeSinceEpochMillisec() - build_tree_start;
     }else if(command == "set_max_iteration"){
         this->max_iteration = stoi(paramstr);
     }else if(command == "set_use_isomorphism"){
@@ -156,11 +182,26 @@ void CommandLineTool::processCommand(string input) {
         this->print_interval = stoi(paramstr);
     }else if(command == "start_solve"){
         cout << "<<<START SOLVING>>>" << endl;
+        if(this->profile_mode){
+            json benchmark_setup;
+            benchmark_setup["type"] = "benchmark_setup";
+            benchmark_setup["board"] = this->board;
+            benchmark_setup["threads"] = this->thread_number;
+            benchmark_setup["max_iteration"] = this->max_iteration;
+            benchmark_setup["print_interval"] = this->print_interval;
+            benchmark_setup["accuracy_target"] = this->accuracy;
+            benchmark_setup["use_isomorphism"] = this->use_isomorphism;
+            benchmark_setup["build_tree_ms"] = this->last_build_tree_ms;
+            benchmark_setup["range_ip"] = this->range_ip;
+            benchmark_setup["range_oop"] = this->range_oop;
+            this->writeLogEvent(benchmark_setup,true);
+        }
+        uint64_t solve_start = timeSinceEpochMillisec();
         this->ps.train(
                 this->range_ip,
                 this->range_oop,
                 this->board,
-                "tmp_log.txt",
+                this->log_file,
                 max_iteration,
                 this->print_interval,
                 "discounted_cfr",
@@ -168,11 +209,26 @@ void CommandLineTool::processCommand(string input) {
                 this->accuracy,
                 this->use_isomorphism,
                 0, // TODO: enable half float option for command line tool
-                this->thread_number
+                this->thread_number,
+                this->profile_mode
         );
+        if(this->profile_mode){
+            json solve_done;
+            solve_done["type"] = "benchmark_solve_done";
+            solve_done["solve_wall_ms"] = timeSinceEpochMillisec() - solve_start;
+            this->writeLogEvent(solve_done);
+        }
     }else if(command == "dump_result"){
         string output_file = paramstr;
+        uint64_t dump_start = timeSinceEpochMillisec();
         this->ps.dump_strategy(QString::fromStdString(output_file),this->dump_rounds);
+        if(this->profile_mode){
+            json dump_done;
+            dump_done["type"] = "benchmark_dump_done";
+            dump_done["dump_result_ms"] = timeSinceEpochMillisec() - dump_start;
+            dump_done["output_file"] = output_file;
+            this->writeLogEvent(dump_done);
+        }
     }else if(command == "set_dump_rounds"){
         this->dump_rounds = stoi(paramstr);
     }else{
