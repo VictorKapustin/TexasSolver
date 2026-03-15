@@ -26,7 +26,20 @@ This guide explains how to build the `TexasSolverGui.exe` from the command line 
    mingw32-make release -j8
    ```
 
-5. The final `TexasSolverGui.exe` will be in the `release\` folder.
+### Building CLI (Console) Version
+
+If you need the terminal-based version (TexasSolverConsole.exe):
+
+1. Generate the Makefile for the console project:
+   ```cmd
+   qmake TexasSolverConsole.pro "CONFIG+=release"
+   ```
+2. Build the executable:
+   ```cmd
+   mingw32-make release -j8
+   ```
+
+The final `TexasSolverGui.exe` or `TexasSolverConsole.exe` will be in the `release\` folder.
 
 ## Deployment (Standalone Package)
 
