@@ -1,0 +1,18 @@
+# Build artifacts
+release/
+debug/
+deploy/
+Makefile
+Makefile.Debug
+Makefile.Release
+object_script.*.Release
+object_script.*.Debug
+make_output.txt
+.qmake.stash
+*.user
+*.exe
+
+# Object files
+*.o
+*.obj
+
