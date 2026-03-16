@@ -95,7 +95,7 @@ long long PokerSolver::estimate_tree_memory(QString range1,QString range2,QStrin
 
 void PokerSolver::train(string p1_range, string p2_range, string boards, string log_file, int iteration_number,
                         int print_interval, string algorithm,int warmup,float accuracy,bool use_isomorphism,
-                        int use_halffloats, int threads, bool profile_enabled) {
+                        int use_halffloats, int threads, bool profile_enabled, bool task_parallelism) {
     string player1RangeStr = p1_range;
     string player2RangeStr = p2_range;
 
@@ -132,6 +132,7 @@ void PokerSolver::train(string p1_range, string p2_range, string boards, string 
             , use_halffloats
             , threads
             , profile_enabled
+            , task_parallelism
     );
     this->solver->train();
 }

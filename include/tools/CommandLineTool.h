@@ -43,6 +43,7 @@ private:
     int max_iteration=100;
     int use_isomorphism=0;
     int use_halffloats=0;
+    int task_parallelism=1;
     int print_interval=10;
     int dump_rounds = 1;
     bool profile_mode = false;

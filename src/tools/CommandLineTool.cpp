@@ -183,6 +183,11 @@ void CommandLineTool::processCommand(string input) {
         if(this->use_halffloats < 0 || this->use_halffloats > 2) {
             throw runtime_error(tfm::format("use_halffloats must be 0, 1, or 2: %s", paramstr));
         }
+    }else if(command == "set_task_parallelism"){
+        this->task_parallelism = stoi(paramstr);
+        if(this->task_parallelism != 0 && this->task_parallelism != 1) {
+            throw runtime_error(tfm::format("task_parallelism must be 0 or 1: %s", paramstr));
+        }
     }else if(command == "set_print_interval"){
         this->print_interval = stoi(paramstr);
     }else if(command == "start_solve"){
@@ -197,6 +202,7 @@ void CommandLineTool::processCommand(string input) {
             benchmark_setup["accuracy_target"] = this->accuracy;
             benchmark_setup["use_isomorphism"] = this->use_isomorphism;
             benchmark_setup["use_halffloats"] = this->use_halffloats;
+            benchmark_setup["task_parallelism"] = this->task_parallelism;
             benchmark_setup["build_tree_ms"] = this->last_build_tree_ms;
             benchmark_setup["range_ip"] = this->range_ip;
             benchmark_setup["range_oop"] = this->range_oop;
@@ -216,7 +222,8 @@ void CommandLineTool::processCommand(string input) {
                 this->use_isomorphism,
                 this->use_halffloats,
                 this->thread_number,
-                this->profile_mode
+                this->profile_mode,
+                this->task_parallelism != 0
         );
         if(this->profile_mode){
             json solve_done;

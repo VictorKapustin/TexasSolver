@@ -13,6 +13,12 @@
 #include <memory>
 #include <atomic>
 #include <cstdint>
+#include <functional>
+#include <vector>
+
+using std::shared_ptr;
+using std::vector;
+using std::unordered_map;
 
 class RiverRangeManager {
 public:
@@ -28,18 +34,26 @@ public:
         uint64_t p2_entries = 0;
     };
 
+    enum { NUM_SHARDS = 128 };
+    
+    struct Shard {
+        mutable std::mutex lock;
+        std::unordered_map<uint64_t, std::shared_ptr<std::vector<RiverCombs>>> map;
+    };
+
+
     RiverRangeManager();
     RiverRangeManager(shared_ptr<Compairer> handEvaluator);
+    ~RiverRangeManager(); // explicitly define
     const vector<RiverCombs>& getRiverCombos(int player, const vector<PrivateCards>& riverCombos, const vector<int>& board);
     const vector<RiverCombs>& getRiverCombos(int player, const vector<PrivateCards>& riverCombos, uint64_t board_long);
     void resetStats();
     CacheStats getStats() const;
+
 private:
-    unordered_map<uint64_t , shared_ptr<vector<RiverCombs>>> p1RiverRanges;
-    unordered_map<uint64_t , shared_ptr<vector<RiverCombs>>> p2RiverRanges;
+    Shard p1_shards[NUM_SHARDS];
+    Shard p2_shards[NUM_SHARDS];
     shared_ptr<Compairer> handEvaluator;
-    mutable mutex p1_maplock;
-    mutable mutex p2_maplock;
     std::atomic<uint64_t> cache_lookups{0};
     std::atomic<uint64_t> cache_hits{0};
     std::atomic<uint64_t> cache_misses{0};
@@ -48,6 +62,5 @@ private:
     std::atomic<uint64_t> cache_build_ns{0};
     std::atomic<uint64_t> cache_lock_wait_ns{0};
 };
-
 
 #endif //TEXASSOLVER_RIVERRANGEMANAGER_H

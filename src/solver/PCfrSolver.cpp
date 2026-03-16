@@ -34,7 +34,8 @@ PCfrSolver::~PCfrSolver(){
 PCfrSolver::PCfrSolver(shared_ptr<GameTree> tree, vector<PrivateCards> range1, vector<PrivateCards> range2,
                      vector<int> initial_board, shared_ptr<Compairer> compairer, Deck deck, int iteration_number, bool debug,
                      int print_interval, string logfile, string trainer, Solver::MonteCarolAlg monteCarolAlg,int warmup,
-                     float accuracy,bool use_isomorphism,int use_halffloats,int num_threads,bool profile_enabled)
+                     float accuracy,bool use_isomorphism,int use_halffloats,int num_threads,bool profile_enabled,
+                     bool task_parallelism)
                      :Solver(tree), rrm(compairer){
     this->initial_board = initial_board;
     this->initial_board_long = Card::boardInts2long(initial_board);
@@ -69,6 +70,7 @@ PCfrSolver::PCfrSolver(shared_ptr<GameTree> tree, vector<PrivateCards> range1, v
     this->monteCarolAlg = monteCarolAlg;
     this->accuracy = accuracy;
     this->profile_enabled = profile_enabled;
+    this->task_parallelism = task_parallelism;
     if(num_threads == -1){
         num_threads = omp_get_num_procs();
     }
@@ -184,6 +186,33 @@ json PCfrSolver::collectBenchmarkStatsJson() const {
             }}
     };
     return retval;
+}
+
+bool PCfrSolver::canUseTaskParallelism() const {
+    return this->task_parallelism
+            && this->num_threads > 1
+            && this->monteCarolAlg == MonteCarolAlg::NONE;
+}
+
+bool PCfrSolver::isAboveSplitRound(GameTreeNode::GameRound round) const {
+    if(this->root_round == GameTreeNode::GameRound::RIVER) {
+        return false;
+    }
+    return GameTreeNode::gameRound2int(round) < GameTreeNode::gameRound2int(this->split_round);
+}
+
+bool PCfrSolver::shouldUseActionTasks(GameTreeNode::GameRound round, int action_count, int range_size) const {
+    return this->canUseTaskParallelism()
+            && omp_in_parallel()
+            && action_count > 1
+            && (action_count * range_size) >= 512
+            && this->isAboveSplitRound(round);
+}
+
+bool PCfrSolver::shouldUseChanceTasks(std::size_t valid_card_count) const {
+    return this->canUseTaskParallelism()
+            && omp_in_parallel()
+            && valid_card_count >= 8;
 }
 
 const vector<PrivateCards> &PCfrSolver::playerHands(int player) {
@@ -440,14 +469,26 @@ void PCfrSolver::chanceUtility(int player, shared_ptr<ChanceNode> node, const fl
         scratch.pop_floats(player_hand_len);
     };
 
-    if(omp_in_parallel()) {
-        for(std::size_t valid_ind = 0; valid_ind < valid_cards.size(); valid_ind++) {
-            evaluate_valid_card(valid_ind);
+    if(this->shouldUseChanceTasks(valid_cards.size())) {
+        #pragma omp taskgroup
+        {
+            for(int valid_ind = 0; valid_ind < static_cast<int>(valid_cards.size()); valid_ind++) {
+                #pragma omp task firstprivate(valid_ind)
+                {
+                    evaluate_valid_card(static_cast<std::size_t>(valid_ind));
+                }
+            }
         }
     } else {
-        #pragma omp parallel for schedule(static)
-        for(int valid_ind = 0; valid_ind < static_cast<int>(valid_cards.size()); valid_ind++) {
-            evaluate_valid_card(static_cast<std::size_t>(valid_ind));
+        if(!omp_in_parallel()) {
+            #pragma omp parallel for schedule(static)
+            for(int valid_ind = 0; valid_ind < static_cast<int>(valid_cards.size()); valid_ind++) {
+                evaluate_valid_card(static_cast<std::size_t>(valid_ind));
+            }
+        } else {
+            for(std::size_t valid_ind = 0; valid_ind < valid_cards.size(); valid_ind++) {
+                evaluate_valid_card(valid_ind);
+            }
         }
     }
 
@@ -517,37 +558,60 @@ void PCfrSolver::actionUtility(int player, shared_ptr<ActionNode> node, const fl
     // Push scratch space
     float* current_strategy = scratch.push_floats(action_count * node_player_size);
     float* regrets = scratch.push_floats(action_count * node_player_size);
-    float* child_utility = scratch.push_floats(my_range_size);
     float* all_action_utilities = scratch.push_floats(action_count * my_range_size);
+    const bool use_action_tasks = this->shouldUseActionTasks(node->getRound(), action_count, my_range_size);
+    float* child_utility = nullptr;
+    if(!use_action_tasks) {
+        child_utility = scratch.push_floats(my_range_size);
+    }
 
     uint64_t strategy_fetch_start = this->profile_enabled ? steadyNowNs() : 0;
     trainable->getcurrentStrategyInPlace(current_strategy);
     if(benchmark_stats != nullptr) benchmark_stats->strategy_fetch_ns += (this->profile_enabled ? steadyNowNs() - strategy_fetch_start : 0);
 
-    for (int action_id = 0; action_id < action_count; action_id++) {
+    auto evaluate_action_branch = [&](int action_id, float* branch_utility) {
         if (node->getPlayer() != player) {
             // Oppo is making a decision, update their reach probs passing down
-            float* new_reach_probs = scratch.push_floats(node_player_size);
+            ThreadScratchBuffer& branch_scratch = this->currentThreadScratchBuffer();
+            float* new_reach_probs = branch_scratch.push_floats(node_player_size);
             for (int hand_id = 0; hand_id < node_player_size; hand_id++) {
                 float strategy_prob = current_strategy[hand_id + action_id * node_player_size];
                 new_reach_probs[hand_id] = reach_probs[hand_id] * strategy_prob;
             }
-            this->cfr(player, children[action_id], new_reach_probs, iter, current_board, deal, child_utility);
-            scratch.pop_floats(node_player_size);
+            this->cfr(player, children[action_id], new_reach_probs, iter, current_board, deal, branch_utility);
+            branch_scratch.pop_floats(node_player_size);
         } else {
             // I am making the decision, reach probs don't change for child calls
-            this->cfr(player, children[action_id], reach_probs, iter, current_board, deal, child_utility);
+            this->cfr(player, children[action_id], reach_probs, iter, current_board, deal, branch_utility);
         }
+    };
 
-        // Store child utility and accumulate payoff
-        std::copy(child_utility, child_utility + my_range_size, all_action_utilities + action_id * my_range_size);
-        
+    if(use_action_tasks) {
+        #pragma omp taskgroup
+        {
+            for (int action_id = 0; action_id < action_count; action_id++) {
+                #pragma omp task firstprivate(action_id)
+                {
+                    float* branch_utility = all_action_utilities + action_id * my_range_size;
+                    evaluate_action_branch(action_id, branch_utility);
+                }
+            }
+        }
+    } else {
+        for (int action_id = 0; action_id < action_count; action_id++) {
+            evaluate_action_branch(action_id, child_utility);
+            std::copy(child_utility, child_utility + my_range_size, all_action_utilities + action_id * my_range_size);
+        }
+    }
+
+    for (int action_id = 0; action_id < action_count; action_id++) {
+        float* branch_utility = all_action_utilities + action_id * my_range_size;
         for (int hand_id = 0; hand_id < my_range_size; hand_id++) {
             if (player == node->getPlayer()) {
                 float strategy_prob = current_strategy[hand_id + action_id * my_range_size];
-                result[hand_id] += strategy_prob * child_utility[hand_id];
+                result[hand_id] += strategy_prob * branch_utility[hand_id];
             } else {
-                result[hand_id] += child_utility[hand_id];
+                result[hand_id] += branch_utility[hand_id];
             }
         }
     }
@@ -625,7 +689,9 @@ void PCfrSolver::actionUtility(int player, shared_ptr<ActionNode> node, const fl
 
     // Pop scratch space
     scratch.pop_floats(action_count * my_range_size);
-    scratch.pop_floats(my_range_size);
+    if(!use_action_tasks) {
+        scratch.pop_floats(my_range_size);
+    }
     scratch.pop_floats(action_count * node_player_size);
     scratch.pop_floats(action_count * node_player_size);
 }
@@ -832,6 +898,7 @@ void PCfrSolver::train() {
         session_meta["accuracy_target"] = this->accuracy;
         session_meta["use_isomorphism"] = this->use_isomorphism;
         session_meta["use_halffloats"] = this->use_halffloats;
+        session_meta["task_parallelism"] = this->task_parallelism;
         session_meta["range_sizes"] = {this->range1.size(), this->range2.size()};
         session_meta["root_round"] = GameTreeNode::gameRound2int(this->root_round);
         fileWriter << session_meta << endl;
@@ -864,15 +931,25 @@ void PCfrSolver::train() {
         for(int player_id = 0;player_id < this->player_number;player_id ++) {
             this->round_deal = vector<int>{-1,-1,-1,-1};
             uint64_t player_cfr_start = steadyNowNs();
-            //#pragma omp parallel
-            {
-                //#pragma omp single
+            auto run_player_cfr = [&]() {
+                ThreadScratchBuffer& root_scratch = this->currentThreadScratchBuffer();
+                float* root_result = root_scratch.push_floats(this->ranges[player_id].size());
+                cfr(player_id, this->tree->getRoot(), reach_probs[1 - player_id].data(), i, this->initial_board_long, 0, root_result);
+                root_scratch.pop_floats(this->ranges[player_id].size());
+            };
+            if(this->canUseTaskParallelism()) {
+                #pragma omp parallel
                 {
-                    //this->distributing_task = true;
+                    #pragma omp single
+                    {
+                        run_player_cfr();
+                    }
+                }
+            } else {
+                {
                     float* root_result = this->currentThreadScratchBuffer().push_floats(this->ranges[player_id].size());
                     cfr(player_id, this->tree->getRoot(), reach_probs[1 - player_id].data(), i, this->initial_board_long, 0, root_result);
                     this->currentThreadScratchBuffer().pop_floats(this->ranges[player_id].size());
-                    //throw runtime_error("returning...");
                 }
             }
             player_cfr_ms[player_id] = nsToMs(steadyNowNs() - player_cfr_start);
@@ -935,11 +1012,23 @@ void PCfrSolver::train() {
     this->rrm.resetStats();
     for(int player_id = 0;player_id < this->player_number;player_id ++) {
         this->round_deal = vector<int>{-1,-1,-1,-1};
-        //#pragma omp parallel
-        {
-            //#pragma omp single
+        auto collect_player_statics = [&]() {
+            ThreadScratchBuffer& root_scratch = this->currentThreadScratchBuffer();
+            float* result = root_scratch.push_floats(this->ranges[player_id].size());
+            std::fill(result, result + this->ranges[player_id].size(), 0.0f);
+            cfr(player_id, this->tree->getRoot(), reach_probs[1 - player_id].data(), this->iteration_number, this->initial_board_long,0, result);
+            root_scratch.pop_floats(this->ranges[player_id].size());
+        };
+        if(this->canUseTaskParallelism()) {
+            #pragma omp parallel
             {
-                //this->distributing_task = true;
+                #pragma omp single
+                {
+                    collect_player_statics();
+                }
+            }
+        } else {
+            {
                 vector<float> result(this->ranges[player_id].size(), 0.0f);
                 cfr(player_id, this->tree->getRoot(), reach_probs[1 - player_id].data(), this->iteration_number, this->initial_board_long,0, result.data());
             }

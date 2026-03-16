@@ -195,7 +195,8 @@ public:
             bool use_isomorphism,
             int use_halffloats,
             int num_threads,
-            bool profile_enabled = false
+            bool profile_enabled = false,
+            bool task_parallelism = false
     );
     ~PCfrSolver();
     void train() override;
@@ -221,6 +222,7 @@ private:
     bool use_isomorphism;
     int use_halffloats;
     int num_threads;
+    bool task_parallelism = false;
     bool distributing_task = false;
     bool collecting_statics = false;
 
@@ -269,6 +271,10 @@ private:
     ThreadScratchBuffer& currentThreadScratchBuffer();
     void resetBenchmarkThreadStats();
     json collectBenchmarkStatsJson() const;
+    bool canUseTaskParallelism() const;
+    bool isAboveSplitRound(GameTreeNode::GameRound round) const;
+    bool shouldUseActionTasks(GameTreeNode::GameRound round, int action_count, int range_size) const;
+    bool shouldUseChanceTasks(std::size_t valid_card_count) const;
 
     const std::vector<PrivateCards>& playerHands(int player);
     std::vector<std::vector<float>> getReachProbs();

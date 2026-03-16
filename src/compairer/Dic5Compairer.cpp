@@ -1,4 +1,4 @@
-﻿//
+//
 // Created by Xuefeng Huang on 2020/1/29.
 //
 
@@ -10,6 +10,7 @@
 #include <QDebug>
 #include "time.h"
 #include "unistd.h"
+#include <limits>
 
 #define SUIT_0_MASK   0x1111111111111
 #define SUIT_1_MASK   0x2222222222222
@@ -51,12 +52,6 @@ void FiveCardsStrength::convert(unordered_map<uint64_t, int>& strength_map) {
     }
 }
 bool FiveCardsStrength::load(const char* file_path) {
-    //ifstream file(file_path, ios::binary);
-    /*if (!file) {
-        file.close();
-        return false;
-    }*/
-
     QFile file(QString::fromStdString(file_path));
     if (!file.open(QIODevice::ReadOnly)){
         throw runtime_error("unable to load compairer file");
@@ -83,10 +78,6 @@ bool FiveCardsStrength::load(const char* file_path) {
     return true;
 }
 bool FiveCardsStrength::save(const char* file_path) {
-    //qDebug() << "a";
-    //sleep(10);
-    //qDebug() << "b";
-    //file_path = "/Users/bytedance/Desktop/card5_dic_zipped_shortdeck.bin";
     ofstream file(file_path, ios::binary);
     if (!file) {
         file.close();
@@ -141,9 +132,7 @@ Dic5Compairer::Dic5Compairer(string dic_dir,int lines,string dic_dir_bin):Compai
         throw runtime_error("unable to load compairer file");
     }
     QTextStream in(&infile);
-    //progressbar bar(lines / 1000);
     int i = 0;
-    //while (std::getline(infile, line))
     while (!in.atEnd())
     {
         string line = in.readLine().toStdString();
@@ -160,10 +149,6 @@ Dic5Compairer::Dic5Compairer(string dic_dir,int lines,string dic_dir_bin):Compai
                     tfm::format(
                             "cards not correct: %s length %s",cards_str,cards.size()));
 
-        //set<string> cards_set;
-        //for(string one_card:cards) cards_set.insert(one_card);
-        //this->card2rank[cards_set] = rank;
-
         if(this->cardslong2rank.find(Card::boardCards2long(cards)) != this->cardslong2rank.end()){
             throw runtime_error(
                     tfm::format("key repeated: %s",cards_str)
@@ -173,14 +158,9 @@ Dic5Compairer::Dic5Compairer(string dic_dir,int lines,string dic_dir_bin):Compai
         this->cardslong2rank[Card::boardCards2long(cards)] = rank;
 
         i ++;
-        if(i % 1000 == 0) {
-            //bar.update();
-        }
     }
-    //cout << endl;
     fcs.convert(this->cardslong2rank);
     if(!fcs.check(this->cardslong2rank)){
-        //fcs.save(dic_dir_bin.c_str());
         throw runtime_error("check consistency failed");
     }
     this->cardslong2rank.clear();
@@ -188,12 +168,10 @@ Dic5Compairer::Dic5Compairer(string dic_dir,int lines,string dic_dir_bin):Compai
 
 Compairer::CompairResult Dic5Compairer::compairRanks(int rank_former, int rank_latter) {
     if (rank_former < rank_latter) {
-        // rank更小的牌更大，0是同花顺
         return CompairResult::LARGER;
     } else if (rank_former > rank_latter) {
         return CompairResult::SMALLER;
     } else {
-        // rank_former == rank_latter
         return CompairResult::EQUAL;
     }
 }
@@ -201,17 +179,11 @@ Compairer::CompairResult Dic5Compairer::compairRanks(int rank_former, int rank_l
 Compairer::CompairResult
 Dic5Compairer::compair(vector<Card> private_former, vector<Card> private_latter, vector<Card> public_board) {
     if(private_former.size() != 2)
-        throw runtime_error(
-                tfm::format("private former size incorrect,excepted 2, actually %s",private_former.size())
-                );
+        throw runtime_error(tfm::format("private former size incorrect,excepted 2, actually %s",private_former.size()));
     if(private_latter.size() != 2)
-        throw runtime_error(
-                tfm::format("private latter size incorrect,excepted 2, actually %s",private_latter.size())
-        );
+        throw runtime_error(tfm::format("private latter size incorrect,excepted 2, actually %s",private_latter.size()));
     if(public_board.size() != 5)
-        throw runtime_error(
-                tfm::format("public board size incorrect,excepted 2, actually %s",public_board.size())
-        );
+        throw runtime_error(tfm::format("public board size incorrect,excepted 2, actually %s",public_board.size()));
 
     vector<Card> former_cards(private_former);
     former_cards.insert(former_cards.end(),public_board.begin(),public_board.end());
@@ -227,17 +199,11 @@ Dic5Compairer::compair(vector<Card> private_former, vector<Card> private_latter,
 Compairer::CompairResult
 Dic5Compairer::compair(vector<int> private_former, vector<int> private_latter, vector<int> public_board) {
     if(private_former.size() != 2)
-        throw runtime_error(
-                tfm::format("private former size incorrect,excepted 2, actually %s",private_former.size())
-        );
+        throw runtime_error(tfm::format("private former size incorrect,excepted 2, actually %s",private_former.size()));
     if(private_latter.size() != 2)
-        throw runtime_error(
-                tfm::format("private latter size incorrect,excepted 2, actually %s",private_latter.size())
-        );
+        throw runtime_error(tfm::format("private latter size incorrect,excepted 2, actually %s",private_latter.size()));
     if(public_board.size() != 5)
-        throw runtime_error(
-                tfm::format("public board size incorrect,excepted 2, actually %s",public_board.size())
-        );
+        throw runtime_error(tfm::format("public board size incorrect,excepted 2, actually %s",public_board.size()));
 
     vector<int> former_cards(private_former);
     former_cards.insert(former_cards.end(),public_board.begin(),public_board.end());
@@ -265,7 +231,6 @@ int Dic5Compairer::getRank(vector<int> cards) {
     {
         if(one_comb.size() != 5)throw runtime_error(tfm::format("card size incorrect: %s should be 5",one_comb.size()));
         uint64_t comb_uint64 = Card::boardInts2long(one_comb);
-        //int rank = this->cardslong2rank[comb_uint64];
         int rank = this->fcs[comb_uint64];
         min_rank = min(rank,min_rank);
     }
@@ -285,6 +250,45 @@ int Dic5Compairer::get_rank(vector<int> private_hand, vector<int> public_board) 
 }
 
 int Dic5Compairer::get_rank(uint64_t private_hand, uint64_t public_board) {
-    return this->get_rank(Card::long2board(private_hand),Card::long2board(public_board));
-}
+    uint64_t combined = private_hand | public_board;
+    uint64_t cards[7];
+    int count = 0;
+    for (int i = 0; i < 64 && count < 7; ++i) {
+        uint64_t bit = 1ULL << i;
+        if (combined & bit) {
+            cards[count++] = bit;
+        }
+    }
 
+    if (count < 5) return numeric_limits<int>::max();
+
+    int min_rank = numeric_limits<int>::max();
+    // combinations loop with guards for count
+    for (int i = 0; i <= count - 5; ++i) {
+        for (int j = i + 1; j <= count - 4; ++j) {
+            for (int k = j + 1; k <= count - 3; ++k) {
+                for (int l = k + 1; l <= count - 2; ++l) {
+                    for (int m = l + 1; m < count; ++m) {
+                        uint64_t comb = cards[i] | cards[j] | cards[k] | cards[l] | cards[m];
+                        
+                        auto it = fcs.flush_map.find(comb);
+                        int rank;
+                        if (it != fcs.flush_map.end()) {
+                            rank = it->second;
+                        } else {
+                            uint64_t hash = ranks_hash(comb);
+                            auto it_other = fcs.other_map.find(hash);
+                            if (it_other != fcs.other_map.end()) {
+                                rank = it_other->second;
+                            } else {
+                                continue; // Should not happen in Hold'em
+                            }
+                        }
+                        if (rank < min_rank) min_rank = rank;
+                    }
+                }
+            }
+        }
+    }
+    return min_rank;
+}
