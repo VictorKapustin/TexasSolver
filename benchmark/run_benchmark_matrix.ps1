@@ -12,7 +12,12 @@ param(
     [switch]$UseOmpPinning,
     [string]$OmpProcBind = "close",
     [string]$OmpPlaces = "cores",
-    $HalfFloatModes = @(0, 1, 2)
+    $HalfFloatModes = @(0, 1, 2),
+    [double]$OverrideAccuracy = [double]::NaN,
+    [int]$OverrideMaxIteration = 0,
+    [int]$OverridePrintInterval = 0,
+    [switch]$SkipDumpResult,
+    [switch]$QuickProfile
 )
 
 $ErrorActionPreference = "Stop"
@@ -132,11 +137,42 @@ $ThreadCounts = ([string[]](@($ThreadCounts)) -join ',' -split '[\s,]+' | Where-
 $PinningProfiles = ([string[]](@($PinningProfiles)) -join ',' -split '[\s,]+' | Where-Object { $_ -ne "" } | Sort-Object -Unique)
 $HalfFloatModes = ([string[]](@($HalfFloatModes)) -join ',' -split '[\s,]+' | Where-Object { $_ -match '^\d+$' } | ForEach-Object { [int]$_ } | Sort-Object -Unique)
 
+if ($QuickProfile) {
+    if ([double]::IsNaN($OverrideAccuracy)) {
+        $OverrideAccuracy = 0.0
+    }
+    if ($OverrideMaxIteration -le 0) {
+        # 121 iterations means the last printed summary can land on iteration 120.
+        $OverrideMaxIteration = 121
+    }
+    if ($OverridePrintInterval -le 0) {
+        $OverridePrintInterval = 40
+    }
+    $SkipDumpResult = $true
+}
+
+if ($OverrideMaxIteration -gt 0 -and $OverridePrintInterval -gt 0) {
+    if ((($OverrideMaxIteration - 1) % $OverridePrintInterval) -ne 0) {
+        Write-Warning "max_iteration=$OverrideMaxIteration and print_interval=$OverridePrintInterval do not align; the last iteration_summary may not correspond to the final iteration."
+    }
+}
+
 Write-Host "--- Benchmark Configuration ---"
 Write-Host "ThreadCounts: $($ThreadCounts -join ', ')"
 Write-Host "PinningProfiles: $($PinningProfiles -join ', ')"
 Write-Host "HalfFloatModes: $($HalfFloatModes -join ', ')"
 Write-Host "RunsPerThread: $RunsPerThread"
+if (-not [double]::IsNaN($OverrideAccuracy)) {
+    Write-Host "OverrideAccuracy: $OverrideAccuracy"
+}
+if ($OverrideMaxIteration -gt 0) {
+    Write-Host "OverrideMaxIteration: $OverrideMaxIteration"
+}
+if ($OverridePrintInterval -gt 0) {
+    Write-Host "OverridePrintInterval: $OverridePrintInterval"
+}
+Write-Host "SkipDumpResult: $SkipDumpResult"
+Write-Host "QuickProfile: $QuickProfile"
 Write-Host "-------------------------------"
 Write-Host "------------------------"
 
@@ -178,12 +214,40 @@ foreach ($pinningProfile in $PinningProfiles) {
                 $scriptContent = $baseContent -replace '(?m)^set_thread_num\s+\d+\s*$', ("set_thread_num {0}" -f $threads)
                 $scriptContent = $scriptContent -replace '(?m)^set_log_file\s+.+$', (("set_log_file {0}" -f $logPath) -replace '\\', '/')
                 $scriptContent = $scriptContent -replace '(?m)^dump_result\s+.+$', (("dump_result {0}" -f $resultPath) -replace '\\', '/')
+
+                if (-not [double]::IsNaN($OverrideAccuracy)) {
+                    if ($scriptContent -match '(?m)^set_accuracy\s+.+$') {
+                        $scriptContent = $scriptContent -replace '(?m)^set_accuracy\s+.+$', ("set_accuracy {0}" -f $OverrideAccuracy)
+                    } else {
+                        $scriptContent = $scriptContent + "`nset_accuracy {0}" -f $OverrideAccuracy
+                    }
+                }
+
+                if ($OverrideMaxIteration -gt 0) {
+                    if ($scriptContent -match '(?m)^set_max_iteration\s+\d+\s*$') {
+                        $scriptContent = $scriptContent -replace '(?m)^set_max_iteration\s+\d+\s*$', ("set_max_iteration {0}" -f $OverrideMaxIteration)
+                    } else {
+                        $scriptContent = $scriptContent + "`nset_max_iteration {0}" -f $OverrideMaxIteration
+                    }
+                }
+
+                if ($OverridePrintInterval -gt 0) {
+                    if ($scriptContent -match '(?m)^set_print_interval\s+\d+\s*$') {
+                        $scriptContent = $scriptContent -replace '(?m)^set_print_interval\s+\d+\s*$', ("set_print_interval {0}" -f $OverridePrintInterval)
+                    } else {
+                        $scriptContent = $scriptContent + "`nset_print_interval {0}" -f $OverridePrintInterval
+                    }
+                }
                 
                 # Setup halffloats
                 if ($scriptContent -match '(?m)^set_use_halffloats\s+\d+') {
                     $scriptContent = $scriptContent -replace '(?m)^set_use_halffloats\s+\d+', ("set_use_halffloats {0}" -f $hf)
                 } else {
                     $scriptContent = $scriptContent + "`nset_use_halffloats {0}" -f $hf
+                }
+
+                if ($SkipDumpResult) {
+                    $scriptContent = $scriptContent -replace '(?m)^dump_result\s+.+$\r?\n?', ''
                 }
 
                 Set-Content -Path $scriptPath -Value $scriptContent -Encoding ascii

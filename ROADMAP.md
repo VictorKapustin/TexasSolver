@@ -156,17 +156,101 @@ TODO внутри P3:
 - После снятия river bottleneck прогнать отдельный thread sweep `20/24/28/32` и заново проверить `none` vs `ccd0`.
 
 Следующие рекомендуемые шаги:
-- Сейчас идти в `P5`: убрать глобальный mutex/serial contention из `RiverRangeManager`, сделать board-local cache и ускорить evaluator/showdown pipeline.
-- Возвращаться к `P3` не после полного завершения `P5`, а сразу после первого измеримого milestone: когда `river_lock_wait_ms` на `none / 32` упадёт хотя бы примерно вдвое или перестанет быть одним из доминирующих пунктов профиля.
-- В этот момент запускать `P3.2`: subtree-aware scheduler, retune task cutoff, thread sweep и повторную A/B matrix-проверку на том же benchmark profile.
+- `P5` milestone по river contention закрыт: `river_lock_wait_ms` на `none / 32` упал с `~8,4 s` до `~1,3 s`, поэтому исходный gate для возврата к scheduler work уже достигнут.
+- Следующим осмысленным шагом снова становится `P3.2`: subtree-aware scheduler, retune task cutoff, thread sweep `20/24/28/32` и повторная A/B matrix-проверка на том же benchmark profile.
+- Если profiling после `P3.2` снова покажет заметный river/showdown tail, отдельный цикл `P5.2` должен идти уже в `valid-hand masks`, более агрессивный evaluator/LUT и дополнительную декомпозицию showdown metrics.
 
 P4. Упростить и уплотнить базовые структуры данных
 Критичность: High. Выигрыш: 10-25%, RAM -10-20%.
 PrivateCards хранит внутри heap-овый vector<int> на каждую руку в PrivateCards.h#L21 и PrivateCards.cpp#L15; дерево построено на shared_ptr-графе с множеством мелких объектов в GameTreeNode.h и GameTree.cpp. Для solver-ядра лучше перейти на POD/SoA для рук, плоские массивы/arena для узлов, индексы вместо shared_ptr, contiguous layout для children/actions/trainables.
 
-P5. Ускорить evaluator и river/showdown pipeline
-Критичность: High. Выигрыш: 15-35% на turn/river-heavy деревьях.
-Сейчас RiverRangeManager держит глобальный mutex в RiverRangeManager.cpp#L35, а rank считается через bitmask -> vector<int> -> перебор 5-card combinations в Dic5Compairer.cpp#L261 и Dic5Compairer.cpp#L287. Тут большой резерв: board-specific cache без глобальной блокировки, precompute valid-hand masks, более быстрый 7-card evaluator/LUT, меньше преобразований uint64_t <-> vector<int>.
+P5. Ускорить evaluator и river/showdown pipeline (частично выполнено, milestone по river contention закрыт)
+Критичность: High. Изначальная rough-цель: 15-35% на turn/river-heavy деревьях. Фактический результат первого инженерного этапа: основной bottleneck в river cache снят, evaluator ускорен, drift по exploitability не обнаружен.
+
+Что было сделано:
+- `RiverRangeManager` переведён с двух глобальных `map + mutex` на `128-way lock sharding`: каждая shard держит свой локальный `std::mutex` и свой cache. Вариант с `std::shared_mutex` был отвергнут, потому что на MinGW 8.1 он дал слишком большой overhead.
+- `Dic5Compairer::get_rank(uint64_t, uint64_t)` переписан на прямой bit-mask loop `7-card -> 5-card`, без `Card::long2board()` и без временных `vector<int>` в hot path.
+- Добран оставшийся allocation tail: `RiverCombs` больше не хранит `board`, а `RiverRangeManager` больше не материализует `Card::long2board(board_long)` на каждую руку.
+
+Что показал benchmark (`baseline = p3_hf_task1`, verification run = `matrix_20260316_215613`, профиль `none / 32 / 2 runs`):
+
+| HF | Solve Before | Solve After | Delta | Lock Wait Before | Lock Wait After | Exploitability |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| 0 | 99940 | 70532 | -29,4% | 8438,78 | 1329,03 | 0,491256 -> 0,491256 |
+| 1 | 99824 | 63995 | -35,9% | 8552,94 | 1347,73 | 0,491256 -> 0,491256 |
+| 2 | 94466 | 66265 | -29,9% | 7893,24 | 1329,58 | 0,466475 -> 0,466475 |
+
+Что показала дополнительная валидация корректности:
+- fast evaluator был сверен со старым vector-based path на `50000` случайных валидных `7-card` sample; расхождений по rank не найдено;
+- `RiverRangeManager::getRiverCombos()` был сверен с reference builder на `128` случайных river boards с реальными диапазонами из benchmark profile; содержимое совпало;
+- повторный benchmark run на том же коде (`matrix_20260316_213349`) дал тот же порядок величины по `river_lock_wait_ms` (`~1,28-1,37 s`) и ту же exploitability, то есть эффект воспроизводим, а различия по solve time укладываются в run-to-run noise короткой `2-run` matrix.
+
+## Quick Benchmark Baseline For Next Steps (`matrix_20260316_222631`)
+
+Это не replacement для полного benchmark выше, а короткий inner-loop профиль из `QuickProfile`-режима:
+- fixed budget `120` iterations;
+- `none / 32 / 2 runs`;
+- ослабленный benchmark для быстрых сравнений перед следующими шагами `P3.2/P4/P5.2`.
+
+| HF | Solve Median | Iterations | Exploitability | Fetch (ms) | Regret (ms) | Lock Wait (ms) |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| 0 | 40136 | 120 | 0,940265 | 944,58 | 909,70 | 1315,20 |
+| 1 | 39246 | 120 | 0,940265 | 892,65 | 863,04 | 1284,09 |
+| 2 | 39182 | 120 | 0,936509 | 905,62 | 1649,52 | 1151,30 |
+
+Что это значит:
+- после `P5` даже быстрый benchmark подтверждает, что новый river baseline стабилен и остаётся существенно быстрее старого full-P3 baseline;
+- для короткого tuning-loop `HF1` и `HF2` сейчас почти сравнялись по wall-clock, а `HF0` немного позади;
+- exploitability в quick-profile заметно хуже полного benchmark по определению, поэтому этот набор нельзя напрямую использовать вместо full validation;
+- именно этот quick baseline теперь стоит использовать как дешёвый smoke/perf gate перед каждым локальным изменением в `P3.2` и `P4`, а подтверждать итоговые выводы уже полным matrix-run.
+
+## Archived P3.2 Probe And Rollback
+
+Ниже зафиксирован уже выполненный цикл `P3.2`, чтобы не повторять его повторно без новой гипотезы. Эти эксперименты были сделаны после quick baseline `matrix_20260316_222631`, а затем код был возвращён к baseline path.
+
+Что именно было предпринято:
+- временно были добавлены раздельные scheduler controls для `action` и `chance`, чтобы мерить `action-only`, `chance-only` и `full` по отдельности;
+- временно была добавлена scheduler telemetry в benchmark JSONL, включая task counters и reject reasons;
+- был отдельно проверен experimental subtree-aware / mixed child split;
+- были прогнаны decomposition benchmarks `p32_decompose_*` на quick profile, сначала как smoke, затем на `2 runs` для `HF0/HF1`.
+
+Что показал decomposition benchmark на `none / 32 / 2 runs / 120 iterations`:
+
+| Profile | HF0 Solve Median | HF1 Solve Median | Итог |
+| :--- | :--- | :--- | :--- |
+| `a0/c0` | 50734 | 51220 | reference без раздельных task paths |
+| `a0/c1` | 51670 | 51871 | `chance-only` не дал устойчивого выигрыша |
+| `a1/c0` | 160442 | 157774 | `action-only` дал тяжёлую регрессию |
+| `a1/c1` | 40416 | 41631 | лучший из decomposition modes, но не лучше production quick baseline |
+
+Что показал direct compare против production quick baseline `matrix_20260316_222631`:
+- baseline `HF0/HF1` был `40136 / 39246 ms`;
+- decomposition `full a1/c1` дал `40416 / 41631 ms`;
+- значит новый `P3.2` цикл не дал нового ускорения поверх уже существующего quick baseline.
+
+Что ещё было проверено и чем это закончилось:
+- experimental mixed child split дал быстрый и воспроизводимый регресс порядка `~161-185 s` на quick profile вместо `~39-40 s`;
+- после этого solver был возвращён к baseline scheduler path, а временные `P3.2` controls/telemetry были убраны из кода;
+- sanity recheck после отката вернул quick-profile `HF1` обратно в baseline-диапазон `~40,4 s`.
+
+Что мы узнали и считаем закрытым знанием:
+- рабочим остаётся только исходный `full scheduler`; отдельные `action-only` и `chance-only` режимы не являются новыми production кандидатами;
+- `action-only` как отдельное направление в текущем дизайне признан неэффективным и повторно без новой архитектурной идеи не запускается;
+- decomposition benchmark сам по себе полезен только как исследовательский инструмент и не дал нового speedup.
+
+Что потенциально можно выжать позже, если целенаправленно возвращаться в `P3.2`:
+- сначала убрать диагностический overhead из hot path, если telemetry снова понадобится;
+- затем тюнить только `chance` grainsize/chunking внутри полного scheduler-а, а не пытаться развивать `action-only` ветку;
+- разумный remaining upside здесь выглядит умеренным, порядка `~3-8%`; если quick-profile не уходит хотя бы примерно в диапазон `~37-38 s`, этот трек стоит считать почти исчерпанным.
+
+Статус:
+- на `2026-03-17` этот цикл `P3.2` считаем задокументированным и завершённым без нового performance win;
+- повторять его “с нуля” не нужно; возвращаться только при появлении новой конкретной гипотезы по `chance chunking` или другому scheduler tuning.
+
+Вывод по фазе:
+- первый milestone `P5` закрыт успешно: цель “сбить `river_lock_wait_ms` с `~8400 ms` хотя бы примерно вдвое” выполнена с большим запасом;
+- текущая реализация выглядит корректной: benchmark exploitability не сдвинулась, differential-check fast/slow evaluator прошёл, river cache сверка прошла;
+- `P5` как направление ещё не исчерпан полностью, но по ROI следующий цикл разумнее вернуть в `P3.2`/`P4`, а не продолжать углубляться в river pipeline немедленно.
 
 P6. Алгоритмические ускорители без смены класса solver
 Критичность: High. Выигрыш: 1.5-3x, зависит от дерева.
@@ -179,7 +263,7 @@ P7. Большие архитектурные ускорители
 Приоритет по критичности
 
 Самое срочное: P1, P2, P3.
-Следом: P4, P5.
+Следом: P4, P3.2/P5.2.
 Потом: P6.
 Дальше как отдельная ветка продукта: P7.
 Низкий приоритет сейчас: GPU, NUMA-aware оптимизации, AVX512. Для 5950X сначала нужен AVX2/FMA и нормальный data layout.

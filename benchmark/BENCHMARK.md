@@ -273,6 +273,45 @@ The script writes:
 - per-run rows in `summary.csv` / `summary.json`
 - aggregated rows per `(pinning_profile, threads)` in `aggregate.csv` / `aggregate.json`
 
+## Quick Benchmark Mode
+
+For day-to-day optimization work, the full benchmark can be unnecessarily expensive.
+`run_benchmark_matrix.ps1` now supports a quick mode:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File benchmark/run_benchmark_matrix.ps1 `
+  -ExePath C:\TexasSolver\release\TexasSolverConsole.exe `
+  -BaseScript C:\TexasSolver\benchmark\benchmark_texassolver_profile.txt `
+  -ThreadCounts 32 `
+  -RunsPerThread 2 `
+  -PinningProfiles none `
+  -HalfFloatModes 0,1,2 `
+  -QuickProfile
+```
+
+`-QuickProfile` applies these overrides automatically:
+
+- `set_accuracy 0.0`
+- `set_max_iteration 121`
+- `set_print_interval 40`
+- skip `dump_result`
+
+Why this is useful:
+
+- it reduces wall-clock time substantially;
+- it keeps the benchmark on a fixed shorter iteration budget instead of allowing different variants to stop at different exploitability thresholds;
+- it still produces a final `iteration_summary` aligned with iteration `120`.
+
+If you want a custom lightweight profile without using the preset, the script also accepts:
+
+- `-OverrideAccuracy`
+- `-OverrideMaxIteration`
+- `-OverridePrintInterval`
+- `-SkipDumpResult`
+
+For regression tracking, keep the full benchmark as the final validation step.
+Use quick mode for inner-loop tuning, then rerun the full benchmark before updating roadmap conclusions.
+
 Default 5950X masks embedded in the script:
 
 - `physical`: `0x0000FFFF`
