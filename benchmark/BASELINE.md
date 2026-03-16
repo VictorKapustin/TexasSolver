@@ -1,6 +1,7 @@
 # Benchmark Baseline
 
 This document records the current benchmark baseline for the profiled CLI workflow on the user's Ryzen 9 5950X machine.
+It was captured before the extended P0 diagnostics fields (`allocator_profile`, `river_cache`) were added to the profile log.
 
 ## Environment
 
@@ -138,3 +139,5 @@ Primary benchmark outputs:
 Helper script used to run the matrix:
 
 - `benchmark/run_benchmark_matrix.ps1`
+
+For fresh P0 baselines, rerun the matrix with pinning profiles (`none`, `ccd0`, `ccd1`) and compare by `(threads, pinning_profile)`.

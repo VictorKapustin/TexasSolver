@@ -26,7 +26,7 @@ BestResponse::BestResponse(vector<vector<PrivateCards>> &private_combos, int pla
     }
     this->nthreads = nthreads;
     this->use_halffloats = use_halffloats;
-    for(int i = 0;i < 52 * 52 * 2;i ++){
+    for(int i = 0;i < kColorIsoTableSize;i ++){
         for(int j = 0;j < 4;j ++){
             this->color_iso_offset[i][j] = color_iso_offset[i][j];
         }
@@ -115,8 +115,6 @@ vector<float> BestResponse::bestResponse(shared_ptr<GameTreeNode> node, int play
 vector<float>
 BestResponse::chanceBestReponse(shared_ptr<ChanceNode> node, int player,const vector<vector<float>>& reach_probs,
                                 uint64_t current_board, int deal) {
-    vector<Card>& cards = this->deck.getCards();
-
     int card_num = node->getCards().size();
     // 可能的发牌情况,2代表每个人的holecard是两张
     int possible_deals = node->getCards().size() - Card::long2board(current_board).size() - 2;
@@ -124,43 +122,37 @@ BestResponse::chanceBestReponse(shared_ptr<ChanceNode> node, int player,const ve
     vector<float> chance_utility = vector<float>(reach_probs[player].size());
     fill(chance_utility.begin(),chance_utility.end(),0);
 
-    vector<vector<vector<float>>> best_respond_arr_new_reach_probs = vector<vector<vector<float>>>(node->getCards().size());
-    // 遍历每一种发牌的可能性
+    vector<vector<float>> results(52);
+    vector<int> valid_cards;
+    valid_cards.reserve(node->getCards().size());
+    const vector<PrivateCards>& player_private_cards = this->pcm.getPreflopCards(player);
+    const vector<PrivateCards>& oppo_private_cards = this->pcm.getPreflopCards(1 - player);
 
-    vector<vector<float>> results(node->getCards().size());
-
-    #pragma omp parallel for
     for(std::size_t card = 0;card < node->getCards().size();card ++) {
+        Card one_card = node->getCards()[card];
+        uint64_t card_long = Card::boardInt2long(one_card.getCardInt());
+
+        if (Card::boardsHasIntercept(card_long, current_board)) continue;
+        if(this->color_iso_offset[deal][one_card.getCardInt() % 4] < 0) continue;
+        valid_cards.push_back(static_cast<int>(card));
+    }
+
+    auto evaluate_valid_card = [&](int card) {
         shared_ptr<GameTreeNode> one_child = node->getChildren();
         Card one_card = node->getCards()[card];
         uint64_t card_long = Card::boardInt2long(one_card.getCardInt());
 
-        // 不可能发出和board重复的牌，对吧
-        if (Card::boardsHasIntercept(card_long, current_board)) continue;
-        if(this->color_iso_offset[deal][one_card.getCardInt() % 4] < 0) continue;
-
-        const vector<PrivateCards> &playerPrivateCard = this->pcm.getPreflopCards(
-                player);//this.getPlayerPrivateCard(player);
-        const vector<PrivateCards> &oppoPrivateCards = this->pcm.getPreflopCards(1 - player);
-
-        if (best_respond_arr_new_reach_probs[card].empty()) {
-            best_respond_arr_new_reach_probs[card] = vector<vector<float>>(2);
-        }
-        vector<vector<float>> new_reach_probs = best_respond_arr_new_reach_probs[card];
-        if (new_reach_probs[player].empty()) {
-            new_reach_probs[player] = vector<float>(playerPrivateCard.size());
-            new_reach_probs[1 - player] = vector<float>(oppoPrivateCards.size());
-        }
-
-        //new_reach_probs[player] = new float[playerPrivateCard.length];
+        vector<vector<float>> new_reach_probs(2);
+        new_reach_probs[player] = vector<float>(player_private_cards.size());
+        new_reach_probs[1 - player] = vector<float>(oppo_private_cards.size());
 
 #ifdef DEBUG
-        if (reach_probs[player].size() != playerPrivateCard.size())
+        if (reach_probs[player].size() != player_private_cards.size())
             throw runtime_error("length mismatch");
 
         // 检查是否双方 hand和reach prob长度符合要求
-        if (playerPrivateCard.size() != reach_probs[player].size()) throw runtime_error("length not match1 ");
-        if (oppoPrivateCards.size() != reach_probs[1 - player].size()) throw runtime_error("length not match2 ");
+        if (player_private_cards.size() != reach_probs[player].size()) throw runtime_error("length not match1 ");
+        if (oppo_private_cards.size() != reach_probs[1 - player].size()) throw runtime_error("length not match2 ");
 #endif
 
         for (int one_player = 0; one_player < 2; one_player++) {
@@ -196,8 +188,20 @@ BestResponse::chanceBestReponse(shared_ptr<ChanceNode> node, int player,const ve
         }
         vector<float> child_utility = this->bestResponse(one_child, player, new_reach_probs, new_board_long,new_deal);
         results[one_card.getNumberInDeckInt()] = child_utility;
+    };
+
+    if(omp_in_parallel()) {
+        for(int card : valid_cards) {
+            evaluate_valid_card(card);
+        }
+    } else {
+        #pragma omp parallel for schedule(static)
+        for(int valid_index = 0; valid_index < static_cast<int>(valid_cards.size()); valid_index++) {
+            evaluate_valid_card(valid_cards[valid_index]);
+        }
     }
 
+    vector<int> exchange_scratch(52 * 52 * 2);
     for(std::size_t card = 0;card < node->getCards().size();card ++) {
         Card *one_card = const_cast<Card *>(&(node->getCards()[card]));
         vector<float> child_utility;
@@ -210,7 +214,7 @@ BestResponse::chanceBestReponse(shared_ptr<ChanceNode> node, int player,const ve
 #endif
             // TODO 这里需要调换一下颜色,根据offset
             child_utility = results[one_card->getNumberInDeckInt() + offset];
-            exchange_color(child_utility,private_combos[player],rank1,rank2);
+            exchange_color(child_utility,private_combos[player],rank1,rank2, exchange_scratch.data());
         }else{
             child_utility = results[one_card->getNumberInDeckInt()];
         }

@@ -2,12 +2,14 @@
 // Created by Xuefeng Huang on 2020/1/31.
 //
 
-#include <include/solver/BestResponse.h>
-#include "include/solver/PCfrSolver.h"
+#include <solver/BestResponse.h>
+#include <solver/PCfrSolver.h>
 #include <QtCore>
 #include <QObject>
 #include <QTranslator>
 #include <chrono>
+#include <cmath>
+#include <cstdint>
 
 //#define DEBUG;
 
@@ -23,7 +25,7 @@ uint64_t steadyNowNs() {
 double nsToMs(uint64_t ns) {
     return static_cast<double>(ns) / 1000000.0;
 }
-}
+} // namespace
 
 PCfrSolver::~PCfrSolver(){
     //cout << "Pcfr destroyed" << endl;
@@ -32,7 +34,8 @@ PCfrSolver::~PCfrSolver(){
 PCfrSolver::PCfrSolver(shared_ptr<GameTree> tree, vector<PrivateCards> range1, vector<PrivateCards> range2,
                      vector<int> initial_board, shared_ptr<Compairer> compairer, Deck deck, int iteration_number, bool debug,
                      int print_interval, string logfile, string trainer, Solver::MonteCarolAlg monteCarolAlg,int warmup,
-                     float accuracy,bool use_isomorphism,int use_halffloats,int num_threads,bool profile_enabled) :Solver(tree){
+                     float accuracy,bool use_isomorphism,int use_halffloats,int num_threads,bool profile_enabled)
+                     :Solver(tree), rrm(compairer){
     this->initial_board = initial_board;
     this->initial_board_long = Card::boardInts2long(initial_board);
     this->logfile = logfile;
@@ -55,7 +58,6 @@ PCfrSolver::PCfrSolver(shared_ptr<GameTree> tree, vector<PrivateCards> range1, v
     this->use_isomorphism = use_isomorphism;
     this->use_halffloats = use_halffloats;
 
-    this->rrm = RiverRangeManager(compairer);
     this->iteration_number = iteration_number;
 
     vector<vector<PrivateCards>> private_cards(this->player_number);
@@ -75,6 +77,11 @@ PCfrSolver::PCfrSolver(shared_ptr<GameTree> tree, vector<PrivateCards> range1, v
     this->distributing_task = false;
     omp_set_num_threads(this->num_threads);
     this->benchmark_thread_stats = vector<BenchmarkThreadStats>(this->num_threads > 0 ? this->num_threads : 1);
+    this->thread_scratch_buffers = std::vector<std::shared_ptr<ThreadScratchBuffer>>(this->num_threads > 0 ? this->num_threads : 1);
+    for(std::size_t i = 0; i < this->thread_scratch_buffers.size(); ++i) {
+        this->thread_scratch_buffers[i] = std::make_shared<ThreadScratchBuffer>();
+    }
+
     setTrainable(this->tree->getRoot());
     this->root_round = this->tree->getRoot()->getRound();
     if(this->root_round == GameTreeNode::GameRound::PREFLOP){
@@ -93,9 +100,20 @@ PCfrSolver::BenchmarkThreadStats& PCfrSolver::currentBenchmarkThreadStats() {
     return this->benchmark_thread_stats[omp_in_parallel() ? omp_get_thread_num() : 0];
 }
 
+PCfrSolver::ThreadScratchBuffer& PCfrSolver::currentThreadScratchBuffer() {
+    std::size_t thread_index = omp_in_parallel() ? static_cast<std::size_t>(omp_get_thread_num()) : 0;
+    if(thread_index >= this->thread_scratch_buffers.size()) {
+        thread_index = 0;
+    }
+    return *(this->thread_scratch_buffers[thread_index]);
+}
+
 void PCfrSolver::resetBenchmarkThreadStats() {
     for(BenchmarkThreadStats& one_stats : this->benchmark_thread_stats){
         one_stats = BenchmarkThreadStats();
+    }
+    for(const std::shared_ptr<ThreadScratchBuffer>& scratch : this->thread_scratch_buffers) {
+        scratch->resetAllocatorStats();
     }
 }
 
@@ -113,6 +131,20 @@ json PCfrSolver::collectBenchmarkStatsJson() const {
         total.chance_merge_ns += one_stats.chance_merge_ns;
         total.showdown_ns += one_stats.showdown_ns;
         total.terminal_ns += one_stats.terminal_ns;
+        total.allocator_ns += one_stats.allocator_ns;
+        total.allocator_calls += one_stats.allocator_calls;
+        total.allocator_bytes += one_stats.allocator_bytes;
+    }
+    for(const std::shared_ptr<ThreadScratchBuffer>& scratch : this->thread_scratch_buffers) {
+        total.allocator_ns += scratch->allocator_ns;
+        total.allocator_calls += scratch->allocator_calls;
+        total.allocator_bytes += scratch->allocator_bytes;
+    }
+
+    RiverRangeManager::CacheStats river_cache_stats = this->rrm.getStats();
+    double river_cache_hit_rate = 0.0;
+    if(river_cache_stats.lookups != 0){
+        river_cache_hit_rate = static_cast<double>(river_cache_stats.hits) / static_cast<double>(river_cache_stats.lookups);
     }
 
     json retval;
@@ -129,7 +161,27 @@ json PCfrSolver::collectBenchmarkStatsJson() const {
             {"chance_setup", nsToMs(total.chance_setup_ns)},
             {"chance_merge", nsToMs(total.chance_merge_ns)},
             {"showdown_eval", nsToMs(total.showdown_ns)},
-            {"terminal_eval", nsToMs(total.terminal_ns)}
+            {"terminal_eval", nsToMs(total.terminal_ns)},
+            {"allocator", nsToMs(total.allocator_ns)}
+    };
+    retval["allocator_profile"] = {
+            {"calls", total.allocator_calls},
+            {"bytes", total.allocator_bytes},
+            {"megabytes", static_cast<double>(total.allocator_bytes) / (1024.0 * 1024.0)}
+    };
+    retval["river_cache"] = {
+            {"lookups", river_cache_stats.lookups},
+            {"hits", river_cache_stats.hits},
+            {"misses", river_cache_stats.misses},
+            {"builds", river_cache_stats.builds},
+            {"hit_rate", river_cache_hit_rate},
+            {"lookup_ms", nsToMs(river_cache_stats.lookup_ns)},
+            {"build_ms", nsToMs(river_cache_stats.build_ns)},
+            {"lock_wait_ms", nsToMs(river_cache_stats.lock_wait_ns)},
+            {"entries", {
+                    {"player0", river_cache_stats.p1_entries},
+                    {"player1", river_cache_stats.p2_entries}
+            }}
     };
     return retval;
 }
@@ -268,48 +320,50 @@ vector<int> PCfrSolver::getAllAbstractionDeal(int deal){
     return all_deal;
 }
 
-vector<float> PCfrSolver::cfr(int player, shared_ptr<GameTreeNode> node, const vector<float> &reach_probs, int iter,
-                                    uint64_t current_board,int deal) {
+void PCfrSolver::cfr(int player, shared_ptr<GameTreeNode> node, const float* reach_probs, int iter,
+                    uint64_t current_board, int deal, float* result) {
     switch(node->getType()) {
         case GameTreeNode::ACTION: {
             shared_ptr<ActionNode> action_node = std::dynamic_pointer_cast<ActionNode>(node);
-            return actionUtility(player, action_node, reach_probs, iter, current_board,deal);
-        }case GameTreeNode::SHOWDOWN: {
+            actionUtility(player, action_node, reach_probs, iter, current_board, deal, result);
+            break;
+        } case GameTreeNode::SHOWDOWN: {
             shared_ptr<ShowdownNode> showdown_node = std::dynamic_pointer_cast<ShowdownNode>(node);
-            return showdownUtility(player, showdown_node, reach_probs, iter, current_board,deal);
-        }case GameTreeNode::TERMINAL: {
+            showdownUtility(player, showdown_node, reach_probs, iter, current_board, deal, result);
+            break;
+        } case GameTreeNode::TERMINAL: {
             shared_ptr<TerminalNode> terminal_node = std::dynamic_pointer_cast<TerminalNode>(node);
-            return terminalUtility(player, terminal_node, reach_probs, iter, current_board,deal);
-        }case GameTreeNode::CHANCE: {
+            terminalUtility(player, terminal_node, reach_probs, iter, current_board, deal, result);
+            break;
+        } case GameTreeNode::CHANCE: {
             shared_ptr<ChanceNode> chance_node = std::dynamic_pointer_cast<ChanceNode>(node);
-            return chanceUtility(player, chance_node, reach_probs, iter, current_board,deal);
-        }default:
+            chanceUtility(player, chance_node, reach_probs, iter, current_board, deal, result);
+            break;
+        } default:
             throw runtime_error("node type unknown");
     }
 }
 
-vector<float>
-PCfrSolver::chanceUtility(int player, shared_ptr<ChanceNode> node, const vector<float> &reach_probs, int iter,
-                         uint64_t current_board,int deal) {
+void PCfrSolver::chanceUtility(int player, shared_ptr<ChanceNode> node, const float* reach_probs, int iter,
+                          uint64_t current_board, int deal, float* result) {
     BenchmarkThreadStats* benchmark_stats = this->profile_enabled ? &this->currentBenchmarkThreadStats() : nullptr;
     if(benchmark_stats != nullptr){
         benchmark_stats->chance_nodes += 1;
     }
-    vector<Card>& cards = this->deck.getCards();
-    //float[] cardWeights = getCardsWeights(player,reach_probs[1 - player],current_board);
 
     int card_num = node->getCards().size();
     if(card_num % 4 != 0) throw runtime_error("card num cannot round 4");
-    // 可能的发牌情况,2代表每个人的holecard是两张
     int possible_deals = node->getCards().size() - Card::long2board(current_board).size() - 2;
     int oppo = 1 - player;
 
-    //vector<float> chance_utility(reach_probs[player].size());
-    vector<float> chance_utility = vector<float>(this->ranges[player].size());
-    fill(chance_utility.begin(),chance_utility.end(),0);
+    uint64_t chance_setup_start = this->profile_enabled ? steadyNowNs() : 0;
+    
+    // Use result as chance_utility
+    int my_range_size = this->ranges[player].size();
+    std::fill(result, result + my_range_size, 0.0f);
 
     int random_deal = 0;
-    if(this->monteCarolAlg==MonteCarolAlg::PUBLIC) {
+    if(this->monteCarolAlg == MonteCarolAlg::PUBLIC) {
         if (this->round_deal[GameTreeNode::gameRound2int(node->getRound())] == -1) {
             random_deal = random(1, possible_deals + 1 + 2);
             this->round_deal[GameTreeNode::gameRound2int(node->getRound())] = random_deal;
@@ -317,492 +371,357 @@ PCfrSolver::chanceUtility(int player, shared_ptr<ChanceNode> node, const vector<
             random_deal = this->round_deal[GameTreeNode::gameRound2int(node->getRound())];
         }
     }
-    //vector<vector<vector<float>>> arr_new_reach_probs = vector<vector<vector<float>>>(node->getCards().size());
 
-    vector<vector<float>> results(node->getCards().size());
-    //fill(results.begin(),results.end(),nullptr);
-
-    vector<float> multiplier;
+    ThreadScratchBuffer& main_scratch = this->currentThreadScratchBuffer();
+    float* results_flat = main_scratch.push_floats(52 * my_range_size);
+    std::fill(results_flat, results_flat + 52 * my_range_size, 0.0f);
+    
+    float* multiplier = nullptr;
     if(iter <= this->warmup){
-        multiplier = vector<float>(card_num);
-        fill(multiplier.begin(), multiplier.end(), 0);
+        multiplier = main_scratch.push_floats(card_num);
+        std::fill(multiplier, multiplier + card_num, 0.0f);
         for (int card_base = 0; card_base < card_num / 4; card_base++) {
             int cardr = std::rand() % 4;
             int card_target = card_base * 4 + cardr;
             int multiplier_num = 0;
             for (int i = 0; i < 4; i++) {
                 int i_card = card_base * 4 + i;
-                if (i == cardr) {
-                    Card *one_card = const_cast<Card *>(&(node->getCards()[i_card]));
-                    uint64_t card_long = Card::boardInt2long(
-                            one_card->getCardInt());
-                    if (!Card::boardsHasIntercept(card_long, current_board)) {
-                        multiplier_num += 1;
-                    }
-                } else {
-                    Card *one_card = const_cast<Card *>(&(node->getCards()[i_card]));
-                    uint64_t card_long = Card::boardInt2long(
-                            one_card->getCardInt());
-                    if (!Card::boardsHasIntercept(card_long, current_board)) {
-                        multiplier_num += 1;
-                    }
+                Card *one_card = const_cast<Card *>(&(node->getCards()[i_card]));
+                if (!Card::boardsHasIntercept(Card::boardInt2long(one_card->getCardInt()), current_board)) {
+                    multiplier_num += 1;
                 }
             }
-            multiplier[card_target] = multiplier_num;
+            multiplier[card_target] = (float)multiplier_num;
         }
     }
 
     vector<int> valid_cards;
     valid_cards.reserve(node->getCards().size());
-
-    uint64_t chance_setup_start = this->profile_enabled ? steadyNowNs() : 0;
-    for(std::size_t card = 0;card < node->getCards().size();card ++) {
-        shared_ptr<GameTreeNode> one_child = node->getChildren();
+    for(std::size_t card = 0; card < node->getCards().size(); card++) {
         Card *one_card = const_cast<Card *>(&(node->getCards()[card]));
-        uint64_t card_long = Card::boardInt2long(one_card->getCardInt());//Card::boardCards2long(new Card[]{one_card});
+        uint64_t card_long = Card::boardInt2long(one_card->getCardInt());
         if (Card::boardsHasIntercept(card_long, current_board)) continue;
         if (iter <= this->warmup && multiplier[card] == 0) continue;
         if (this->color_iso_offset[deal][one_card->getCardInt() % 4] < 0) continue;
         valid_cards.push_back(card);
     }
-    if(benchmark_stats != nullptr){
-        benchmark_stats->chance_setup_ns += steadyNowNs() - chance_setup_start;
-    }
 
-    #pragma omp parallel for schedule(static)
-    for(std::size_t valid_ind = 0;valid_ind < valid_cards.size();valid_ind++) {
-        BenchmarkThreadStats* thread_stats = this->profile_enabled ? &this->currentBenchmarkThreadStats() : nullptr;
-        uint64_t branch_setup_start = this->profile_enabled ? steadyNowNs() : 0;
+    if(benchmark_stats != nullptr) benchmark_stats->chance_setup_ns += (this->profile_enabled ? steadyNowNs() - chance_setup_start : 0);
+
+    auto evaluate_valid_card = [&](std::size_t valid_ind) {
+        ThreadScratchBuffer& scratch = this->currentThreadScratchBuffer();
         int card = valid_cards[valid_ind];
         shared_ptr<GameTreeNode> one_child = node->getChildren();
         Card *one_card = const_cast<Card *>(&(node->getCards()[card]));
-        uint64_t card_long = Card::boardInt2long(one_card->getCardInt());//Card::boardCards2long(new Card[]{one_card});
-
+        uint64_t card_long = Card::boardInt2long(one_card->getCardInt());
         uint64_t new_board_long = current_board | card_long;
-        if (this->monteCarolAlg == MonteCarolAlg::PUBLIC) {
-            throw runtime_error("parallel solver don't support public monte carol");
-        }
-
-        //cout << "Card deal:" << one_card->toString() << endl;
-
-        vector<PrivateCards> &playerPrivateCard = (this->ranges[player]);
-        vector<PrivateCards> &oppoPrivateCards = (this->ranges[1 - player]);
-
-
-        vector<float> new_reach_probs = vector<float>(oppoPrivateCards.size());
-
-
-
-#ifdef DEBUG
-        if (playerPrivateCard.size() != this->ranges[player].size()) throw runtime_error("length not match");
-        if (oppoPrivateCards.size() != this->ranges[1 - player].size()) throw runtime_error("length not match");
-#endif
 
         int player_hand_len = this->ranges[oppo].size();
+        float* new_reach_probs = scratch.push_floats(player_hand_len);
+
         for (int player_hand = 0; player_hand < player_hand_len; player_hand++) {
-            PrivateCards &one_private = this->ranges[oppo][player_hand];
-            uint64_t privateBoardLong = one_private.toBoardLong();
-            if (Card::boardsHasIntercept(card_long, privateBoardLong)) {
+            const PrivateCards &one_private = this->ranges[oppo][player_hand];
+            if (Card::boardsHasIntercept(card_long, one_private.toBoardLong())) {
                 new_reach_probs[player_hand] = 0;
-                continue;
+            } else {
+                new_reach_probs[player_hand] = reach_probs[player_hand] / possible_deals;
             }
-            new_reach_probs[player_hand] = reach_probs[player_hand] / possible_deals;
         }
-#ifdef DEBUG
-        if (Card::boardsHasIntercept(current_board, card_long))
-            throw runtime_error("board has intercept with dealt card");
-#endif
 
         int new_deal;
-        if(deal == 0){
-            new_deal = card + 1;
-        } else if (deal > 0 && deal <= card_num){
+        if(deal == 0) new_deal = card + 1;
+        else {
             int origin_deal = deal - 1;
+            new_deal = card_num * origin_deal + card + (1 + card_num);
+        }
 
-#ifdef DEBUG
-            if(origin_deal == card) throw runtime_error("deal should not be equal");
-#endif
-            new_deal = card_num * origin_deal + card;
-            new_deal += (1 + card_num);
-        } else{
-            throw runtime_error(tfm::format("deal out of range : %s ",deal));
+        float* child_result_ptr = results_flat + one_card->getNumberInDeckInt() * my_range_size;
+        this->cfr(player, one_child, new_reach_probs, iter, new_board_long, new_deal, child_result_ptr);
+        scratch.pop_floats(player_hand_len);
+    };
+
+    if(omp_in_parallel()) {
+        for(std::size_t valid_ind = 0; valid_ind < valid_cards.size(); valid_ind++) {
+            evaluate_valid_card(valid_ind);
         }
-        if(thread_stats != nullptr){
-            thread_stats->chance_setup_ns += steadyNowNs() - branch_setup_start;
-        }
-        if(this->distributing_task && node->getRound() == this->split_round) {
-            results[one_card->getNumberInDeckInt()] = vector<float>(this->ranges[player].size());
-            //TaskParams taskParams = TaskParams();
-        }else {
-            vector<float> child_utility = this->cfr(player, one_child, new_reach_probs, iter, new_board_long, new_deal);
-            results[one_card->getNumberInDeckInt()] = child_utility;
+    } else {
+        #pragma omp parallel for schedule(static)
+        for(int valid_ind = 0; valid_ind < static_cast<int>(valid_cards.size()); valid_ind++) {
+            evaluate_valid_card(static_cast<std::size_t>(valid_ind));
         }
     }
 
     uint64_t chance_merge_start = this->profile_enabled ? steadyNowNs() : 0;
-    for(std::size_t card = 0;card < node->getCards().size();card ++) {
+    for(std::size_t card = 0; card < node->getCards().size(); card++) {
         Card *one_card = const_cast<Card *>(&(node->getCards()[card]));
-        vector<float> child_utility;
         int offset = this->color_iso_offset[deal][one_card->getCardInt() % 4];
+        float* child_utility_ptr;
         if(offset < 0) {
             int rank1 = one_card->getCardInt() % 4;
             int rank2 = rank1 + offset;
-#ifdef DEBUG
-            if(rank2 < 0) throw runtime_error("rank error");
-#endif
-            child_utility = results[one_card->getNumberInDeckInt() + offset];
-            exchange_color(child_utility,this->pcm.getPreflopCards(player),rank1,rank2);
-        }else{
-            child_utility = results[one_card->getNumberInDeckInt()];
+            child_utility_ptr = results_flat + (one_card->getNumberInDeckInt() + offset) * my_range_size;
+            
+            // Still need a temporary buffer for exchange_color if we want to avoid mutating the flat buffer
+            // but we can just use the scratch!
+            ThreadScratchBuffer& scratch = this->currentThreadScratchBuffer();
+            float* exchanged_utility = scratch.push_floats(my_range_size);
+            std::copy(child_utility_ptr, child_utility_ptr + my_range_size, exchanged_utility);
+            
+            int* exchange_scratch = scratch.push_ints(52 * 52 * 2);
+            exchange_color_ptr(exchanged_utility, my_range_size, this->pcm.getPreflopCards(player), rank1, rank2, exchange_scratch);
+            scratch.pop_ints(52 * 52 * 2);
+            
+            float mult = (iter > this->warmup) ? 1.0f : multiplier[card];
+            if (mult != 0) {
+                for (std::size_t i = 0; i < (std::size_t)my_range_size; i++)
+                    result[i] += exchanged_utility[i] * mult;
+            }
+            scratch.pop_floats(my_range_size);
+        } else {
+            child_utility_ptr = results_flat + one_card->getNumberInDeckInt() * my_range_size;
+            float mult = (iter > this->warmup) ? 1.0f : multiplier[card];
+            if (mult != 0) {
+                for (std::size_t i = 0; i < (std::size_t)my_range_size; i++)
+                    result[i] += child_utility_ptr[i] * mult;
+            }
         }
-        if(child_utility.empty())
-            continue;
+    }
+    if(benchmark_stats != nullptr) benchmark_stats->chance_merge_ns += (this->profile_enabled ? steadyNowNs() - chance_merge_start : 0);
 
-#ifdef DEBUG
-        if(child_utility.size() != chance_utility.size()) throw runtime_error("length not match");
-#endif
-        if(iter > this->warmup) {
-            for (std::size_t i = 0; i < child_utility.size(); i++)
-                chance_utility[i] += child_utility[i];
-        }else{
-            for (std::size_t i = 0; i < child_utility.size(); i++)
-                chance_utility[i] += child_utility[i] * multiplier[card];
-        }
-    }
-    if(benchmark_stats != nullptr){
-        benchmark_stats->chance_merge_ns += steadyNowNs() - chance_merge_start;
-    }
-
-#ifdef DEBUG
-    if(this->monteCarolAlg == MonteCarolAlg::PUBLIC) {
-        throw runtime_error("not possible");
-    }
-    if(chance_utility.size() != this->ranges[player].size()) {
-        throw runtime_error("size problems");
-    }
-#endif
-    return chance_utility;
+    // Pop scratch space
+    if(iter <= this->warmup) main_scratch.pop_floats(card_num);
+    main_scratch.pop_floats(52 * my_range_size);
 }
 
-vector<float>
-PCfrSolver::actionUtility(int player, shared_ptr<ActionNode> node, const vector<float> &reach_probs, int iter,
-                         uint64_t current_board,int deal) {
+void PCfrSolver::actionUtility(int player, shared_ptr<ActionNode> node, const float* reach_probs, int iter,
+                          uint64_t current_board, int deal, float* result) {
     BenchmarkThreadStats* benchmark_stats = this->profile_enabled ? &this->currentBenchmarkThreadStats() : nullptr;
-    if(benchmark_stats != nullptr){
-        benchmark_stats->action_nodes += 1;
-    }
+    if(benchmark_stats != nullptr) benchmark_stats->action_nodes += 1;
+
     int oppo = 1 - player;
     const vector<PrivateCards>& node_player_private_cards = this->ranges[node->getPlayer()];
+    int node_player_size = node_player_private_cards.size();
+    int my_range_size = this->ranges[player].size();
+    
+    // Clear result (payoffs accumulator)
+    std::fill(result, result + my_range_size, 0.0f);
 
-    vector<float> payoffs = vector<float>(this->ranges[player].size());
-    fill(payoffs.begin(),payoffs.end(),0);
-    vector<shared_ptr<GameTreeNode>>& children =  node->getChildrens();
-    vector<GameActions>& actions =  node->getActions();
+    vector<shared_ptr<GameTreeNode>>& children = node->getChildrens();
+    vector<GameActions>& actions = node->getActions();
+    int action_count = actions.size();
 
-    shared_ptr<Trainable> trainable;
+    shared_ptr<Trainable> trainable = node->getTrainable(deal, true, this->use_halffloats);
+    
+    ThreadScratchBuffer& scratch = this->currentThreadScratchBuffer();
+    
+    // Push scratch space
+    float* current_strategy = scratch.push_floats(action_count * node_player_size);
+    float* regrets = scratch.push_floats(action_count * node_player_size);
+    float* child_utility = scratch.push_floats(my_range_size);
+    float* all_action_utilities = scratch.push_floats(action_count * my_range_size);
 
-    /*
-    if(iter <= this->warmup){
-        vector<int> deals = this->getAllAbstractionDeal(deal);
-        trainable = node->getTrainable(deals[0]);
-    }else{
-        trainable = node->getTrainable(deal);
-    }
-     */
     uint64_t strategy_fetch_start = this->profile_enabled ? steadyNowNs() : 0;
-    trainable = node->getTrainable(deal,true,this->use_halffloats);
+    trainable->getcurrentStrategyInPlace(current_strategy);
+    if(benchmark_stats != nullptr) benchmark_stats->strategy_fetch_ns += (this->profile_enabled ? steadyNowNs() - strategy_fetch_start : 0);
 
-#ifdef DEBUG
-    if(trainable == nullptr){
-        throw runtime_error("null trainable");
-    }
-#endif
-
-    const vector<float> current_strategy = trainable->getcurrentStrategy();
-    if(benchmark_stats != nullptr){
-        benchmark_stats->strategy_fetch_ns += steadyNowNs() - strategy_fetch_start;
-    }
-#ifdef DEBUG
-    if (current_strategy.size() != actions.size() * node_player_private_cards.size()) {
-        node->printHistory();
-        throw runtime_error(tfm::format(
-                "length not match %s - %s \n action size %s private_card size %s"
-                ,current_strategy.size()
-                ,actions.size() * node_player_private_cards.size()
-                ,actions.size()
-                ,node_player_private_cards.size()
-        ));
-    }
-#endif
-
-    //为了节省计算成本将action regret 存在一位数组而不是二维数组中，两个纬度分别是（该infoset有多少动作,该palyer有多少holecard）
-    vector<float> regrets(actions.size() * node_player_private_cards.size());
-
-    vector<vector<float>> all_action_utility(actions.size());
-    int node_player = node->getPlayer();
-
-    vector<vector<float>> results(actions.size());
-    for (std::size_t action_id = 0; action_id < actions.size(); action_id++) {
-
-        if (node_player != player) {
-            vector<float> new_reach_prob = vector<float>(reach_probs.size());
-            for (std::size_t hand_id = 0; hand_id < new_reach_prob.size(); hand_id++) {
-                float strategy_prob = current_strategy[hand_id + action_id * node_player_private_cards.size()];
-                new_reach_prob[hand_id] = reach_probs[hand_id] * strategy_prob;
+    for (int action_id = 0; action_id < action_count; action_id++) {
+        if (node->getPlayer() != player) {
+            // Oppo is making a decision, update their reach probs passing down
+            float* new_reach_probs = scratch.push_floats(node_player_size);
+            for (int hand_id = 0; hand_id < node_player_size; hand_id++) {
+                float strategy_prob = current_strategy[hand_id + action_id * node_player_size];
+                new_reach_probs[hand_id] = reach_probs[hand_id] * strategy_prob;
             }
-            //#pragma omp task shared(results,action_id)
-            results[action_id] = this->cfr(player, children[action_id], new_reach_prob, iter,
-                                           current_board,deal);
-        }else {
-            //#pragma omp task shared(results,action_id)
-            results[action_id] = this->cfr(player, children[action_id], reach_probs, iter,
-                                           current_board,deal);
+            this->cfr(player, children[action_id], new_reach_probs, iter, current_board, deal, child_utility);
+            scratch.pop_floats(node_player_size);
+        } else {
+            // I am making the decision, reach probs don't change for child calls
+            this->cfr(player, children[action_id], reach_probs, iter, current_board, deal, child_utility);
         }
 
-    }
-
-    //#pragma omp taskwait
-    for (std::size_t action_id = 0; action_id < actions.size(); action_id++) {
-        vector<float> action_utilities = results[action_id];
-        if(action_utilities.empty()){
-            continue;
-        }
-        all_action_utility[action_id] = action_utilities;
-
-        // cfr结果是每手牌的收益，payoffs代表的也是每手牌的收益，他们的长度理应相等
-#ifdef DEBUG
-        if (action_utilities.size() != payoffs.size()) {
-            cout << ("errmsg") << endl;
-            cout << (tfm::format("node player %s ", node->getPlayer())) << endl;
-            node->printHistory();
-            throw runtime_error(
-                    tfm::format(
-                            "action and payoff length not match %s - %s", action_utilities.size(),
-                            payoffs.size()
-                    )
-            );
-        }
-#endif
-
-        for (std::size_t hand_id = 0; hand_id < action_utilities.size(); hand_id++) {
+        // Store child utility and accumulate payoff
+        std::copy(child_utility, child_utility + my_range_size, all_action_utilities + action_id * my_range_size);
+        
+        for (int hand_id = 0; hand_id < my_range_size; hand_id++) {
             if (player == node->getPlayer()) {
-                float strategy_prob = current_strategy[hand_id + action_id * node_player_private_cards.size()];
-                payoffs[hand_id] += strategy_prob * (action_utilities)[hand_id];
+                float strategy_prob = current_strategy[hand_id + action_id * my_range_size];
+                result[hand_id] += strategy_prob * child_utility[hand_id];
             } else {
-                payoffs[hand_id] += (action_utilities)[hand_id];
+                result[hand_id] += child_utility[hand_id];
             }
         }
     }
-
 
     if (player == node->getPlayer()) {
-        for (std::size_t i = 0; i < node_player_private_cards.size(); i++) {
-            //boolean regrets_all_negative = true;
-            for (std::size_t action_id = 0; action_id < actions.size(); action_id++) {
-                // 下面是regret计算的伪代码
-                // regret[action_id * player_hc: (action_id + 1) * player_hc]
-                //     = all_action_utilitiy[action_id] - payoff[action_id]
-                regrets[action_id * node_player_private_cards.size() + i] =
-                        (all_action_utility[action_id])[i] - payoffs[i];
+        for (int i = 0; i < my_range_size; i++) {
+            for (int action_id = 0; action_id < action_count; action_id++) {
+                regrets[action_id * my_range_size + i] = all_action_utilities[action_id * my_range_size + i] - result[i];
             }
         }
 
         if(!this->distributing_task && !this->collecting_statics) {
+            uint64_t regret_update_start = this->profile_enabled ? steadyNowNs() : 0;
             if (iter > this->warmup) {
-                uint64_t regret_update_start = this->profile_enabled ? steadyNowNs() : 0;
-                trainable->updateRegrets(regrets, iter + 1, reach_probs);
-                if(benchmark_stats != nullptr){
-                    benchmark_stats->regret_update_ns += steadyNowNs() - regret_update_start;
-                }
-            }/*else if(iter < this->warmup){
-            vector<int> deals = this->getAllAbstractionDeal(deal);
-            shared_ptr<Trainable> one_trainable = node->getTrainable(deals[0]);
-            one_trainable->updateRegrets(regrets, iter + 1, reach_probs[player]);
-            }*/
-            else {
-                // iter == this->warmup
+                trainable->updateRegretsInPlace(regrets, iter + 1, reach_probs);
+            } else if (iter == this->warmup) {
                 vector<int> deals = this->getAllAbstractionDeal(deal);
                 shared_ptr<Trainable> standard_trainable = nullptr;
-                uint64_t regret_update_start = this->profile_enabled ? steadyNowNs() : 0;
                 for (int one_deal : deals) {
-                    shared_ptr<Trainable> one_trainable = node->getTrainable(one_deal,true,this->use_halffloats);
+                    shared_ptr<Trainable> one_trainable = node->getTrainable(one_deal, true, this->use_halffloats);
                     if (standard_trainable == nullptr) {
-                        one_trainable->updateRegrets(regrets, iter + 1, reach_probs);
+                        one_trainable->updateRegretsInPlace(regrets, iter + 1, reach_probs);
                         standard_trainable = one_trainable;
                     } else {
                         one_trainable->copyStrategy(standard_trainable);
                     }
                 }
-                if(benchmark_stats != nullptr){
-                    benchmark_stats->regret_update_ns += steadyNowNs() - regret_update_start;
-                }
+            }
+            if((iter >= this->warmup) && benchmark_stats != nullptr) {
+                benchmark_stats->regret_update_ns += (this->profile_enabled ? steadyNowNs() - regret_update_start : 0);
             }
         }
 
-        if(this->collecting_statics || (iter % this->print_interval == 0)){
-            float oppo_sum = 0;
-            vector<float> oppo_card_sum = vector<float> (52);
-            fill(oppo_card_sum.begin(),oppo_card_sum.end(),0);
+        if(this->collecting_statics || (iter % this->print_interval == 0)) {
+            float oppo_sum = 0.0f;
+            float oppo_card_sum[52] = {0.0f};
 
-            const vector<PrivateCards>& oppo_hand = playerHands(oppo);
-            for(std::size_t i = 0;i < oppo_hand.size();i ++){
+            const vector<PrivateCards>& oppo_hand = this->playerHands(oppo);
+            for(std::size_t i = 0; i < oppo_hand.size(); i++) {
                 oppo_card_sum[oppo_hand[i].card1] += reach_probs[i];
                 oppo_card_sum[oppo_hand[i].card2] += reach_probs[i];
                 oppo_sum += reach_probs[i];
             }
 
-            const vector<PrivateCards>& player_hand = playerHands(player);
-            vector<float> evs(actions.size() * node_player_private_cards.size(),0.0);
-            for (std::size_t action_id = 0; action_id < actions.size(); action_id++) {
-                for (std::size_t hand_id = 0; hand_id < node_player_private_cards.size(); hand_id++) {
-                    float one_ev = (all_action_utility)[action_id][hand_id];//current_strategy; //[hand_id + action_id * node_player_private_cards.size()];
+            const vector<PrivateCards>& player_hand = this->playerHands(player);
+            vector<float> evs(action_count * my_range_size, 0.0f);
+            uint64_t ev_update_start = this->profile_enabled ? steadyNowNs() : 0;
 
-                    int oppo_same_card_ind = this->pcm.indPlayer2Player(player,oppo,hand_id);
-                    float plus_reach_prob;
-
+            for (int action_id = 0; action_id < action_count; action_id++) {
+                for (int hand_id = 0; hand_id < my_range_size; hand_id++) {
+                    const float one_ev = all_action_utilities[action_id * my_range_size + hand_id];
                     const PrivateCards& one_player_hand = player_hand[hand_id];
-                    if(oppo_same_card_ind == -1){
-                        plus_reach_prob = 0;
-                    }else{
-                        plus_reach_prob = reach_probs[oppo_same_card_ind];
+                    const int oppo_same_card_ind = this->pcm.indPlayer2Player(player, oppo, hand_id);
+                    const float plus_reach_prob = (oppo_same_card_ind == -1) ? 0.0f : reach_probs[oppo_same_card_ind];
+                    const float rp_sum = oppo_sum
+                            - oppo_card_sum[one_player_hand.card1]
+                            - oppo_card_sum[one_player_hand.card2]
+                            + plus_reach_prob;
+
+                    if(rp_sum > 0.0f && std::isfinite(one_ev)) {
+                        evs[hand_id + action_id * my_range_size] = one_ev / rp_sum;
+                    } else {
+                        // EV is undefined for unreachable hands; keep the dump stable with 0.
+                        evs[hand_id + action_id * my_range_size] = 0.0f;
                     }
-
-                    float rp_sum = (
-                        oppo_sum - oppo_card_sum[one_player_hand.card1]
-                        - oppo_card_sum[one_player_hand.card2]
-                        + plus_reach_prob);
-
-                    evs[hand_id + action_id * node_player_private_cards.size()] = one_ev / rp_sum;
                 }
             }
-            // TODO if evs contains nan what should we do?
-            uint64_t ev_update_start = this->profile_enabled ? steadyNowNs() : 0;
+
             trainable->setEv(evs);
-            if(benchmark_stats != nullptr){
-                benchmark_stats->ev_update_ns += steadyNowNs() - ev_update_start;
+            if(benchmark_stats != nullptr) {
+                benchmark_stats->ev_update_ns += (this->profile_enabled ? steadyNowNs() - ev_update_start : 0);
             }
         }
-
     }
-    return payoffs;
 
+    // Pop scratch space
+    scratch.pop_floats(action_count * my_range_size);
+    scratch.pop_floats(my_range_size);
+    scratch.pop_floats(action_count * node_player_size);
+    scratch.pop_floats(action_count * node_player_size);
 }
-
-vector<float>
-PCfrSolver::showdownUtility(int player, shared_ptr<ShowdownNode> node, const vector<float> &reach_probs,
-                           int iter, uint64_t current_board,int deal) {
+void PCfrSolver::showdownUtility(int player, shared_ptr<ShowdownNode> node, const float* reach_probs,
+                           int iter, uint64_t current_board, int deal, float* result) {
     BenchmarkThreadStats* benchmark_stats = this->profile_enabled ? &this->currentBenchmarkThreadStats() : nullptr;
     uint64_t showdown_start = this->profile_enabled ? steadyNowNs() : 0;
-    if(benchmark_stats != nullptr){
-        benchmark_stats->showdown_nodes += 1;
-    }
-    // player win时候player的收益，player lose的时候收益明显为-player_payoff
+    if(benchmark_stats != nullptr) benchmark_stats->showdown_nodes += 1;
+    
+    int my_range_size = this->ranges[player].size();
+    std::fill(result, result + my_range_size, 0.0f);
+    
     int oppo = 1 - player;
-    float win_payoff = node->get_payoffs(ShowdownNode::ShowDownResult::NOTTIE,player,player);
-    float lose_payoff = node->get_payoffs(ShowdownNode::ShowDownResult::NOTTIE,oppo,player);
+    float win_payoff = node->get_payoffs(ShowdownNode::ShowDownResult::NOTTIE, player, player);
+    float lose_payoff = node->get_payoffs(ShowdownNode::ShowDownResult::NOTTIE, oppo, player);
     const vector<PrivateCards>& player_private_cards = this->ranges[player];
     const vector<PrivateCards>& oppo_private_cards = this->ranges[oppo];
 
-    const vector<RiverCombs>& player_combs = this->rrm.getRiverCombos(player,player_private_cards,current_board);
-    const vector<RiverCombs>& oppo_combs = this->rrm.getRiverCombos(oppo,oppo_private_cards,current_board);
-
-    vector<float> payoffs = vector<float>(player_private_cards.size());
+    const vector<RiverCombs>& player_combs = this->rrm.getRiverCombos(player, player_private_cards, current_board);
+    const vector<RiverCombs>& oppo_combs = this->rrm.getRiverCombos(oppo, oppo_private_cards, current_board);
 
     float winsum = 0;
-    vector<float> card_winsum = vector<float> (52);//node->card_sum;
-    fill(card_winsum.begin(),card_winsum.end(),0);
+    float card_winsum[52] = {0};
 
-    int j = 0;
-    for(std::size_t i = 0;i < player_combs.size();i ++){
+    std::size_t j = 0;
+    for(std::size_t i = 0; i < player_combs.size(); i++) {
         const RiverCombs& one_player_comb = player_combs[i];
-        while (j < oppo_combs.size() && one_player_comb.rank < oppo_combs[j].rank){
+        while (j < oppo_combs.size() && one_player_comb.rank < oppo_combs[j].rank) {
             const RiverCombs& one_oppo_comb = oppo_combs[j];
-            winsum += reach_probs[one_oppo_comb.reach_prob_index];
-            card_winsum[one_oppo_comb.private_cards.card1] += reach_probs[one_oppo_comb.reach_prob_index];
-            card_winsum[one_oppo_comb.private_cards.card2] += reach_probs[one_oppo_comb.reach_prob_index];
-            j ++;
+            float rp = reach_probs[one_oppo_comb.reach_prob_index];
+            winsum += rp;
+            card_winsum[one_oppo_comb.private_cards.card1] += rp;
+            card_winsum[one_oppo_comb.private_cards.card2] += rp;
+            j++;
         }
-        payoffs[one_player_comb.reach_prob_index] = (winsum
+        result[one_player_comb.reach_prob_index] = (winsum
                                                      - card_winsum[one_player_comb.private_cards.card1]
                                                      - card_winsum[one_player_comb.private_cards.card2]
                                                     ) * win_payoff;
     }
 
-    // 计算失败时的payoff
     float losssum = 0;
-    vector<float>& card_losssum = card_winsum;
-    fill(card_losssum.begin(),card_losssum.end(),0);
+    float card_losssum[52] = {0};
 
-    j = oppo_combs.size() - 1;
-    for(int i = player_combs.size() - 1;i >= 0;i --){
+    int64_t j2 = (int64_t)oppo_combs.size() - 1;
+    for(int i = player_combs.size() - 1; i >= 0; i--) {
         const RiverCombs& one_player_comb = player_combs[i];
-        while (j >= 0 && one_player_comb.rank > oppo_combs[j].rank){
-            const RiverCombs& one_oppo_comb = oppo_combs[j];
-            losssum += reach_probs[one_oppo_comb.reach_prob_index];
-            card_losssum[one_oppo_comb.private_cards.card1] += reach_probs[one_oppo_comb.reach_prob_index];
-            card_losssum[one_oppo_comb.private_cards.card2] += reach_probs[one_oppo_comb.reach_prob_index];
-            j --;
+        while (j2 >= 0 && one_player_comb.rank > oppo_combs[j2].rank) {
+            const RiverCombs& one_oppo_comb = oppo_combs[j2];
+            float rp = reach_probs[one_oppo_comb.reach_prob_index];
+            losssum += rp;
+            card_losssum[one_oppo_comb.private_cards.card1] += rp;
+            card_losssum[one_oppo_comb.private_cards.card2] += rp;
+            j2--;
         }
-        payoffs[one_player_comb.reach_prob_index] += (losssum
+        result[one_player_comb.reach_prob_index] += (losssum
                                                       - card_losssum[one_player_comb.private_cards.card1]
                                                       - card_losssum[one_player_comb.private_cards.card2]
                                                      ) * lose_payoff;
     }
-    if(benchmark_stats != nullptr){
-        benchmark_stats->showdown_ns += steadyNowNs() - showdown_start;
-    }
-    return payoffs;
+    if(benchmark_stats != nullptr && this->profile_enabled) benchmark_stats->showdown_ns += steadyNowNs() - showdown_start;
 }
 
-vector<float>
-PCfrSolver::terminalUtility(int player, shared_ptr<TerminalNode> node, const vector<float> &reach_prob, int iter,
-                           uint64_t current_board,int deal) {
+void PCfrSolver::terminalUtility(int player, shared_ptr<TerminalNode> node, const float* reach_probs, int iter,
+                           uint64_t current_board, int deal, float* result) {
     BenchmarkThreadStats* benchmark_stats = this->profile_enabled ? &this->currentBenchmarkThreadStats() : nullptr;
     uint64_t terminal_start = this->profile_enabled ? steadyNowNs() : 0;
-    if(benchmark_stats != nullptr){
-        benchmark_stats->terminal_nodes += 1;
-    }
+    if(benchmark_stats != nullptr) benchmark_stats->terminal_nodes += 1;
+    
     float player_payoff = node->get_payoffs()[player];
-
     int oppo = 1 - player;
-    const vector<PrivateCards>& player_hand = playerHands(player);
-    const vector<PrivateCards>& oppo_hand = playerHands(oppo);
+    const vector<PrivateCards>& player_hand = this->ranges[player];
+    const vector<PrivateCards>& oppo_hand = this->ranges[oppo];
 
-    vector<float> payoffs = vector<float>(this->playerHands(player).size());
-
+    int my_range_size = player_hand.size();
     float oppo_sum = 0;
-    vector<float> oppo_card_sum = vector<float> (52);
-    fill(oppo_card_sum.begin(),oppo_card_sum.end(),0);
-
-    for(std::size_t i = 0;i < oppo_hand.size();i ++){
-        oppo_card_sum[oppo_hand[i].card1] += reach_prob[i];
-        oppo_card_sum[oppo_hand[i].card2] += reach_prob[i];
-        oppo_sum += reach_prob[i];
+    float oppo_card_sum[52] = {0};
+    for(std::size_t i = 0; i < oppo_hand.size(); i++) {
+        oppo_sum += reach_probs[i];
+        oppo_card_sum[oppo_hand[i].card1] += reach_probs[i];
+        oppo_card_sum[oppo_hand[i].card2] += reach_probs[i];
     }
 
-    for(std::size_t i = 0;i < player_hand.size();i ++){
-        const PrivateCards& one_player_hand = player_hand[i];
-        if(Card::boardsHasIntercept(current_board,Card::boardInts2long(one_player_hand.get_hands()))){
+    for(int i = 0; i < my_range_size; i++) {
+        const PrivateCards& pct = player_hand[i];
+        if (Card::boardsHasIntercept(pct.toBoardLong(), current_board)) {
+            result[i] = 0.0f;
             continue;
         }
-        int oppo_same_card_ind = this->pcm.indPlayer2Player(player,oppo,i);
-        float plus_reach_prob;
-        if(oppo_same_card_ind == -1){
-            plus_reach_prob = 0;
-        }else{
-            plus_reach_prob = reach_prob[oppo_same_card_ind];
-        }
-        payoffs[i] = player_payoff * (
-                oppo_sum - oppo_card_sum[one_player_hand.card1]
-                - oppo_card_sum[one_player_hand.card2]
-                + plus_reach_prob
-        );
+        int oppo_same_card_ind = this->pcm.indPlayer2Player(player, oppo, i);
+        float plus_reach_prob = (oppo_same_card_ind == -1) ? 0.0f : reach_probs[oppo_same_card_ind];
+        
+        float rp_sum = oppo_sum - oppo_card_sum[pct.card1] - oppo_card_sum[pct.card2] + plus_reach_prob;
+        result[i] = rp_sum * player_payoff;
     }
-
-    if(benchmark_stats != nullptr){
-        benchmark_stats->terminal_ns += steadyNowNs() - terminal_start;
-    }
-    return payoffs;
+    if(benchmark_stats != nullptr && this->profile_enabled) benchmark_stats->terminal_ns += steadyNowNs() - terminal_start;
 }
 
 void PCfrSolver::findGameSpecificIsomorphisms() {
@@ -919,6 +838,7 @@ void PCfrSolver::train() {
     }
 
     uint64_t initial_br_start = steadyNowNs();
+    this->rrm.resetStats();
     float initial_exploitability = br.printExploitability(tree->getRoot(), 0, tree->getRoot()->getPot(), initial_board_long);
     uint64_t initial_br_ns = steadyNowNs() - initial_br_start;
     if(this->profile_enabled && !this->logfile.empty()){
@@ -927,6 +847,8 @@ void PCfrSolver::train() {
         initial_event["iteration"] = 0;
         initial_event["exploitability"] = initial_exploitability;
         initial_event["best_response_ms"] = nsToMs(initial_br_ns);
+        json initial_benchmark = this->collectBenchmarkStatsJson();
+        initial_event["river_cache"] = initial_benchmark["river_cache"];
         fileWriter << initial_event << endl;
     }
 
@@ -938,6 +860,7 @@ void PCfrSolver::train() {
         uint64_t iteration_start_ns = steadyNowNs();
         double player_cfr_ms[2] = {0.0, 0.0};
         this->resetBenchmarkThreadStats();
+        this->rrm.resetStats();
         for(int player_id = 0;player_id < this->player_number;player_id ++) {
             this->round_deal = vector<int>{-1,-1,-1,-1};
             uint64_t player_cfr_start = steadyNowNs();
@@ -946,7 +869,9 @@ void PCfrSolver::train() {
                 //#pragma omp single
                 {
                     //this->distributing_task = true;
-                    cfr(player_id, this->tree->getRoot(), reach_probs[1 - player_id], i, this->initial_board_long,0);
+                    float* root_result = this->currentThreadScratchBuffer().push_floats(this->ranges[player_id].size());
+                    cfr(player_id, this->tree->getRoot(), reach_probs[1 - player_id].data(), i, this->initial_board_long, 0, root_result);
+                    this->currentThreadScratchBuffer().pop_floats(this->ranges[player_id].size());
                     //throw runtime_error("returning...");
                 }
             }
@@ -975,6 +900,8 @@ void PCfrSolver::train() {
                     json benchmark_json = this->collectBenchmarkStatsJson();
                     jo["solver_profile"] = benchmark_json["timings_ms"];
                     jo["node_counts"] = benchmark_json["node_counts"];
+                    jo["allocator_profile"] = benchmark_json["allocator_profile"];
+                    jo["river_cache"] = benchmark_json["river_cache"];
                 }
                 fileWriter << jo << endl;
             }
@@ -995,6 +922,8 @@ void PCfrSolver::train() {
             json benchmark_json = this->collectBenchmarkStatsJson();
             iteration_event["solver_profile"] = benchmark_json["timings_ms"];
             iteration_event["node_counts"] = benchmark_json["node_counts"];
+            iteration_event["allocator_profile"] = benchmark_json["allocator_profile"];
+            iteration_event["river_cache"] = benchmark_json["river_cache"];
             fileWriter << iteration_event << endl;
         }
     }
@@ -1003,6 +932,7 @@ void PCfrSolver::train() {
     uint64_t collect_statics_start = steadyNowNs();
     this->collecting_statics = true;
     this->resetBenchmarkThreadStats();
+    this->rrm.resetStats();
     for(int player_id = 0;player_id < this->player_number;player_id ++) {
         this->round_deal = vector<int>{-1,-1,-1,-1};
         //#pragma omp parallel
@@ -1010,7 +940,8 @@ void PCfrSolver::train() {
             //#pragma omp single
             {
                 //this->distributing_task = true;
-                cfr(player_id, this->tree->getRoot(), reach_probs[1 - player_id], this->iteration_number, this->initial_board_long,0);
+                vector<float> result(this->ranges[player_id].size(), 0.0f);
+                cfr(player_id, this->tree->getRoot(), reach_probs[1 - player_id].data(), this->iteration_number, this->initial_board_long,0, result.data());
             }
         }
     }
@@ -1025,6 +956,8 @@ void PCfrSolver::train() {
         json benchmark_json = this->collectBenchmarkStatsJson();
         final_event["solver_profile"] = benchmark_json["timings_ms"];
         final_event["node_counts"] = benchmark_json["node_counts"];
+        final_event["allocator_profile"] = benchmark_json["allocator_profile"];
+        final_event["river_cache"] = benchmark_json["river_cache"];
         fileWriter << final_event << endl;
     }
 
@@ -1054,7 +987,7 @@ void PCfrSolver::exchangeRange(json& strategy,int rank1,int rank2,shared_ptr<Act
         range_strs.push_back(one_range_str);
         strategies.push_back(one_strategy);
     }
-    exchange_color(strategies,this->ranges[player],rank1,rank2);
+    vector<int> ex_scratch(52 * 52 * 2); exchange_color(strategies,this->ranges[player],rank1,rank2, ex_scratch.data());
 
     for(std::size_t i = 0;i < this->ranges[player].size();i ++) {
         string one_range_str = this->ranges[player][i].toString();
@@ -1294,6 +1227,10 @@ vector<vector<vector<float>>> PCfrSolver::get_evs(shared_ptr<ActionNode> node,ve
         }
     }
 
+    if(!this->statics_collected) {
+        return ret_evs;
+    }
+
     vector<Card>& cards = this->deck.getCards();
 
     for(Card one_card: chance_cards){
@@ -1328,7 +1265,10 @@ vector<vector<vector<float>>> PCfrSolver::get_evs(shared_ptr<ActionNode> node,ve
         }
         deal = new_deal;
     }
-    shared_ptr<Trainable> trainable = node->getTrainable(deal,true,this->use_halffloats);
+    shared_ptr<Trainable> trainable = node->getTrainable(deal,false,this->use_halffloats);
+    if(trainable == nullptr) {
+        return ret_evs;
+    }
     json retjson = trainable->dump_evs();
 
     for(vector<int> one_exchange:exchange_color_list){
@@ -1372,4 +1312,3 @@ json PCfrSolver::dumps(bool with_status,int depth) {
     this->reConvertJson(this->tree->getRoot(),retjson,"",0,depth,vector<string>({"begin"}),0,vector<vector<int>>());
     return std::move(retjson);
 }
-

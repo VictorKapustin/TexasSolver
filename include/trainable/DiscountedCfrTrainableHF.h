@@ -30,6 +30,8 @@ private:
     constexpr static float gamma = 2;
     constexpr static float theta = 0.9f;
     vector<CumRplusStorage> cum_r_plus;
+    vector<float> r_plus_sum;
+    vector<float> r_plus_local;
 public:
     DiscountedCfrTrainableHF(vector<PrivateCards> *privateCards,
                            ActionNode &actionNode);
@@ -38,8 +40,10 @@ public:
     const vector<float> getAverageStrategy() override;
 
     const vector<float> getcurrentStrategy() override;
+    void getcurrentStrategyInPlace(float* buffer) override;
 
     void updateRegrets(const vector<float>& regrets, int iteration_number, const vector<float>& reach_probs) override;
+    void updateRegretsInPlace(const float* regrets, int iteration_number, const float* reach_probs) override;
 
     void setEv(const vector<float>& evs) override;
 

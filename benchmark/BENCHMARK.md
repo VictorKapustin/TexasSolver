@@ -133,6 +133,16 @@ The most useful fields for optimization work are:
   Time spent in showdown evaluation logic.
 - `solver_profile.terminal_eval`
   Time spent in terminal-node payoff logic.
+- `solver_profile.allocator`
+  Estimated allocator-heavy time in the hot path (temporary vector materialization).
+- `allocator_profile.calls`
+  Number of tracked temporary allocations in profiled scope.
+- `allocator_profile.bytes`
+  Estimated bytes allocated in tracked temporary buffers.
+- `river_cache.hits`, `river_cache.misses`, `river_cache.hit_rate`
+  River cache behavior for the profiled scope.
+- `river_cache.lookup_ms`, `river_cache.build_ms`, `river_cache.lock_wait_ms`
+  Time split for river cache lookup/build/lock wait.
 - `node_counts`
   Number of action, chance, showdown, and terminal nodes touched during the profiled scope.
 
@@ -152,6 +162,21 @@ Because of that, always compare:
 - non-profiled run vs non-profiled run
 
 Do not compare the absolute wall time of a profiled run directly against an older non-profiled benchmark and treat the difference as pure solver speedup.
+
+## Hardware Counters (LLC / Memory Bandwidth)
+
+For P0 you should pair JSONL software timings with hardware counters.
+
+Example on Linux (`perf stat`, event names may differ by CPU):
+
+```bash
+perf stat -e cycles,instructions,cache-references,cache-misses,LLC-load-misses,LLC-store-misses \
+  ./release/TexasSolverConsole --input_file benchmark/benchmark_texassolver_profile.txt
+```
+
+For memory bandwidth, use your platform-specific uncore memory-controller events (for example IMC CAS read/write counters) and convert to GB/s in your analysis script.
+
+On Windows Ryzen systems, the practical path is AMD uProf CLI counters plus the same benchmark input/log workflow.
 
 ## Suggested Comparison Workflow
 
@@ -224,6 +249,55 @@ The current profiling log does not yet expose:
 
 If you need deeper analysis later, the next useful additions are:
 
-- cache hit/miss counters in `RiverRangeManager`
-- counters for trainable creation and lazy allocation
-- optional hardware-counter collection through an external profiler
+- optional per-type allocator counters (trainables vs traversal temporaries)
+- optional hardware-counter collection through an external profiler for LLC miss and memory bandwidth
+
+## P0 Launch Matrix (16/32 + CCD pinning)
+
+Use the matrix helper script:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File benchmark/run_benchmark_matrix.ps1 `
+  -ExePath C:\TexasSolver\release\TexasSolverConsole.exe `
+  -BaseScript C:\TexasSolver\benchmark\benchmark_texassolver_profile.txt `
+  -ThreadCounts 16,32 `
+  -RunsPerThread 3 `
+  -PinningProfiles none,ccd0,ccd1 `
+  -UseOmpPinning `
+  -OmpProcBind close `
+  -OmpPlaces cores
+```
+
+The script writes:
+
+- per-run rows in `summary.csv` / `summary.json`
+- aggregated rows per `(pinning_profile, threads)` in `aggregate.csv` / `aggregate.json`
+
+Default 5950X masks embedded in the script:
+
+- `physical`: `0x0000FFFF`
+- `smt`: `0xFFFFFFFF`
+- `ccd0`: `0x00FF00FF`
+- `ccd1`: `0xFF00FF00`
+
+If your logical CPU mapping differs, pass custom masks via script parameters.
+
+## LTO / PGO Build Modes
+
+Release builds keep `-O3 -march=native` by default.  
+Enable LTO explicitly with `CONFIG+=enable_lto` when your toolchain links cleanly.
+If MinGW emits broad `multiple definition` link errors, drop `enable_lto` for that run and keep PGO-only.
+
+For PGO:
+
+1. Build with profile generation:
+   ```cmd
+   qmake TexasSolverConsole.pro "CONFIG+=release enable_lto pgo_generate"
+   mingw32-make release -j8
+   ```
+2. Run representative benchmark(s) to generate profile data.
+3. Rebuild with profile use:
+   ```cmd
+   qmake TexasSolverConsole.pro "CONFIG+=release enable_lto pgo_use"
+   mingw32-make release -j8
+   ```

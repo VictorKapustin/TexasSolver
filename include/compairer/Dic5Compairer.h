@@ -17,8 +17,8 @@ struct FiveCardsStrength {
     void convert(unordered_map<uint64_t, int>& strength_map);
     bool load(const char* file_path);
     bool save(const char* file_path);
-    int operator[](uint64_t hash);
-    bool check(unordered_map<uint64_t, int>& strength_map);
+    int operator[](uint64_t hash) const;
+    bool check(const unordered_map<uint64_t, int>& strength_map) const;
     unordered_map<uint64_t, int> flush_map, other_map;
 };
 

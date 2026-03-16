@@ -12,6 +12,7 @@ DiscountedCfrTrainableSF::DiscountedCfrTrainableSF(vector<PrivateCards> *private
     this->evs = vector<EvsStorage>(this->action_number * this->card_number, (EvsStorage) 0.0);
     this->r_plus = vector<RplusStorage>(this->action_number * this->card_number, (RplusStorage) 0.0);
     this->cum_r_plus = vector<CumRplusStorage>(this->action_number * this->card_number, (CumRplusStorage) 0.0);
+    this->r_plus_sum = vector<float>(this->card_number, 0.0f);
 }
 
 bool DiscountedCfrTrainableSF::isAllZeros(const vector<float>& input_array) {
@@ -87,59 +88,67 @@ void DiscountedCfrTrainableSF::setEv(const vector<float>& evs){
     for(std::size_t i = 0;i < evs.size();i ++) if(evs[i] == evs[i])this->evs[i] = evs[i];
 }
 
+void DiscountedCfrTrainableSF::getcurrentStrategyInPlace(float* buffer) {
+    std::fill(this->r_plus_sum.begin(), this->r_plus_sum.end(), 0.0f);
+    for (int action_id = 0; action_id < action_number; action_id++) {
+        for (int private_id = 0; private_id < this->card_number; private_id++) {
+            int index = action_id * this->card_number + private_id;
+            this->r_plus_sum[private_id] += max(float(0.0), (float)this->r_plus[index]);
+        }
+    }
+
+    for (int action_id = 0; action_id < action_number; action_id++) {
+        for (int private_id = 0; private_id < this->card_number; private_id++) {
+            int index = action_id * this->card_number + private_id;
+            if (this->r_plus_sum[private_id] != 0) {
+                buffer[index] = max(float(0.0), (float)this->r_plus[index]) / this->r_plus_sum[private_id];
+            } else {
+                buffer[index] = 1.0 / (this->action_number);
+            }
+        }
+    }
+}
+
 void DiscountedCfrTrainableSF::updateRegrets(const vector<float>& regrets, int iteration_number, const vector<float>& reach_probs) {
+    this->updateRegretsInPlace(regrets.data(), iteration_number, reach_probs.data());
+}
 
-#ifdef DEBUG
-    if(regrets.size() != this->action_number * this->card_number) throw runtime_error("length not match");
-#endif
-
+void DiscountedCfrTrainableSF::updateRegretsInPlace(const float* regrets, int iteration_number, const float* reach_probs) {
     auto alpha_coef = pow(iteration_number, this->alpha);
     alpha_coef = alpha_coef / (1 + alpha_coef);
 
-    vector<float> r_plus_sum = vector<float>(this->r_plus.size());
-    fill(r_plus_sum.begin(),r_plus_sum.end(),0);
-    for (int action_id = 0;action_id < action_number;action_id ++) {
-        for(int private_id = 0;private_id < this->card_number;private_id ++){
+    // Completely bounded, no dynamic memory heap allocations inside the rapid recursion path!
+    std::fill(this->r_plus_sum.begin(), this->r_plus_sum.end(), 0.0f);
+    
+    for (int action_id = 0; action_id < action_number; action_id++) {
+        for (int private_id = 0; private_id < this->card_number; private_id++) {
             int index = action_id * this->card_number + private_id;
             float one_reg = regrets[index];
 
             // 更新 R+
             float this_r_plus_of_index = this->r_plus[index];
             this_r_plus_of_index = one_reg + this_r_plus_of_index;
-            if(this_r_plus_of_index > 0){
+            if (this_r_plus_of_index > 0) {
                 this_r_plus_of_index *= alpha_coef;
-            }else{
+            } else {
                 this_r_plus_of_index *= beta;
             }
-            r_plus_sum[private_id] += max(float(0.0),this_r_plus_of_index);
+            this->r_plus_sum[private_id] += max(float(0.0), this_r_plus_of_index);
             this->r_plus[index] = this_r_plus_of_index;
         }
     }
 
-    // inline replacement to reuse r_plus_sum of
-    // vector<float> current_strategy = this->getcurrentStrategyNoCache();
-    vector<float> current_strategy = vector<float>(this->action_number * this->card_number);
+    float strategy_coef = pow(((float)iteration_number / (iteration_number + 1)), gamma);
     for (int action_id = 0; action_id < action_number; action_id++) {
         for (int private_id = 0; private_id < this->card_number; private_id++) {
             int index = action_id * this->card_number + private_id;
-            if(r_plus_sum[private_id] != 0) {
-                current_strategy[index] = max(float(0.0), this->r_plus[index]) / r_plus_sum[private_id];
-            }else{
-                current_strategy[index] = 1.0 / (this->action_number);
+            float current_strat;
+            if (this->r_plus_sum[private_id] != 0) {
+                current_strat = max(float(0.0), (float)this->r_plus[index]) / this->r_plus_sum[private_id];
+            } else {
+                current_strat = 1.0 / (this->action_number);
             }
-#ifdef DEBUG
-            if(this->r_plus[index] != this->r_plus[index]) throw runtime_error("nan found");
-#endif
-        }
-    }
-    // end of inline replacement
-
-    float strategy_coef = pow(((float)iteration_number / (iteration_number + 1)),gamma);
-    for (int action_id = 0;action_id < action_number;action_id ++) {
-        for(int private_id = 0;private_id < this->card_number;private_id ++) {
-            int index = action_id * this->card_number + private_id;
-            this->cum_r_plus[index] = this->cum_r_plus[index] * this->theta +
-                current_strategy[index] * strategy_coef;// * reach_probs[private_id];
+            this->cum_r_plus[index] = this->cum_r_plus[index] * this->theta + current_strat * strategy_coef;
         }
     }
 }

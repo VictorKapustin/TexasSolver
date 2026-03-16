@@ -81,6 +81,23 @@ const vector<float> DiscountedCfrTrainable::getcurrentStrategyNoCache() {
     return current_strategy;
 }
 
+void DiscountedCfrTrainable::getcurrentStrategyInPlace(float* buffer) {
+    if(this->r_plus_sum.empty()){
+        std::fill(buffer, buffer + (this->action_number * this->card_number), 1.0 / this->action_number);
+    }else {
+        for (int action_id = 0; action_id < action_number; action_id++) {
+            for (int private_id = 0; private_id < this->card_number; private_id++) {
+                int index = action_id * this->card_number + private_id;
+                if(this->r_plus_sum[private_id] != 0) {
+                    buffer[index] = max(float(0.0),this->r_plus[index]) / this->r_plus_sum[private_id];
+                }else{
+                    buffer[index] = 1.0 / (this->action_number);
+                }
+            }
+        }
+    }
+}
+
 void DiscountedCfrTrainable::setEv(const vector<float>& evs){
     if(evs.size() != this->evs.size()) throw runtime_error("size mismatch in discountcfrtrainable setEV");
     for(std::size_t i = 0;i < evs.size();i ++) if(evs[i] == evs[i])this->evs[i] = evs[i];
@@ -126,6 +143,44 @@ void DiscountedCfrTrainable::updateRegrets(const vector<float>& regrets, int ite
             this->cum_r_plus[index] *= this->theta;
             this->cum_r_plus[index] += current_strategy[index] * strategy_coef;// * reach_probs[private_id];
             //this->cum_r_plus_sum[private_id] += this->cum_r_plus[index] ;
+        }
+    }
+}
+
+void DiscountedCfrTrainable::updateRegretsInPlace(const float* regrets, int iteration_number, const float* reach_probs) {
+    auto alpha_coef = pow(iteration_number, this->alpha);
+    alpha_coef = alpha_coef / (1 + alpha_coef);
+
+    std::fill(r_plus_sum.begin(), r_plus_sum.end(), 0);
+    for (int action_id = 0; action_id < action_number; action_id++) {
+        for (int private_id = 0; private_id < this->card_number; private_id++) {
+            int index = action_id * this->card_number + private_id;
+            float one_reg = regrets[index];
+
+            this->r_plus[index] = one_reg + this->r_plus[index];
+            if (this->r_plus[index] > 0) {
+                this->r_plus[index] *= alpha_coef;
+            } else {
+                this->r_plus[index] *= beta;
+            }
+
+            this->r_plus_sum[private_id] += max(float(0.0), this->r_plus[index]);
+        }
+    }
+
+    // Reuse a small local buffer for strategy if needed, but here we can just compute it on the fly or use the same logic
+    float strategy_coef = pow(((float)iteration_number / (iteration_number + 1)), gamma);
+    for (int action_id = 0; action_id < action_number; action_id++) {
+        for (int private_id = 0; private_id < this->card_number; private_id++) {
+            int index = action_id * this->card_number + private_id;
+            float strat;
+            if (this->r_plus_sum[private_id] != 0) {
+                strat = max(float(0.0), this->r_plus[index]) / this->r_plus_sum[private_id];
+            } else {
+                strat = 1.0 / (this->action_number);
+            }
+            this->cum_r_plus[index] *= this->theta;
+            this->cum_r_plus[index] += strat * strategy_coef;
         }
     }
 }

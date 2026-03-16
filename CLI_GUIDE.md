@@ -40,6 +40,8 @@ set_bet_sizes ip,flop,allin
 - `set_accuracy <value>`: Target exploitability (e.g., `0.3`).
 - `set_max_iteration <n>`: Maximum number of rounds.
 - `set_use_isomorphism <0|1>`: Enable card isomorphism for speed.
+- `set_profile_mode <0|1>`: Enable extended JSONL profiling output.
+- `set_log_file <path>`: Path to JSONL benchmark log file.
 
 ### Execution & Output
 - `start_solve`: Begins the calculation. Progress will be printed to stdout.
@@ -71,3 +73,15 @@ If you have built the console version, run it as:
 ./release/TexasSolverConsole.exe --input_file script.txt
 ```
 Or interactively by just launching the executable.
+
+## P0 Benchmark Mode
+
+For the P0 workflow (16/32 threads + CCD pinning + profiling):
+
+1. Use `benchmark/benchmark_texassolver_profile.txt` as the base script.
+2. Run `benchmark/run_benchmark_matrix.ps1` with:
+   - `-ThreadCounts 16,32`
+   - `-PinningProfiles none,ccd0,ccd1`
+   - optional OpenMP binding flags (`-UseOmpPinning -OmpProcBind close -OmpPlaces cores`)
+
+The matrix script writes `summary.csv` and `aggregate.csv` in a timestamped folder under `benchmark/benchmark_outputs/`.

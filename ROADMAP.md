@@ -2,13 +2,15 @@
 
 Roadmap
 
-P0. Базовая диагностика и режим запуска
+P0. Базовая диагностика и режим запуска (сделано)
 Критичность: Critical. Выигрыш: 0-15% напрямую, но это обязательный этап.
 Сначала разделить время на solve, best response, river cache, allocator, LLC miss, memory bandwidth; отдельно прогнать 16 и 32 потоков, плюс pinning по CCD. На 5950X для memory-bound solver очень часто 16 физических потоков быстрее 32 SMT. Заодно вернуть LTO и подготовить PGO: сейчас -O3 -march=native уже есть, а LTO выключен в TexasSolverGui.pro#L59.
 
-P1. Убрать лишние аллокации и копии в hot path
+P1. Убрать лишние аллокации и копии в hot path (сделано)
 Критичность: Critical. Выигрыш: 20-40%, RAM -15-30%.
 Сейчас на каждом проходе массово создаются и копируются vector<float>: new_reach_probs в PCfrSolver.cpp#L319, regrets/results/all_action_utility в PCfrSolver.cpp#L451, стратегия возвращается по значению в PCfrSolver.cpp#L436 и DiscountedCfrTrainable.cpp#L51. Первый большой шаг: thread-local scratch buffers, in-place API для strategy/regret, меньше временных векторов, реже пересчитывать exploitability. Быстрые мелочи: exchange_color должен принимать const vector<PrivateCards>&, а не копию в utils.h#L19.
+
+TODO: allocator observability: allocator_mb is still 0
 
 P2. Починить memory layout trainables
 Критичность: Critical. Выигрыш: 10-25%, плюс лучшее масштабирование по ядрам.

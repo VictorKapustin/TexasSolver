@@ -113,13 +113,13 @@ bool FiveCardsStrength::save(const char* file_path) {
     file.close();
     return true;
 }
-int FiveCardsStrength::operator[](uint64_t hash) {
+int FiveCardsStrength::operator[](uint64_t hash) const {
     auto it = flush_map.find(hash);
     if (it != flush_map.end()) return it->second;
     hash = ranks_hash(hash);
     return other_map.at(hash);
 }
-bool FiveCardsStrength::check(unordered_map<uint64_t, int>& strength_map) {
+bool FiveCardsStrength::check(const unordered_map<uint64_t, int>& strength_map) const {
     auto it = strength_map.begin(), it_end = strength_map.end();
     int cnt = 0;
     for (; it != it_end; it++, cnt++) {

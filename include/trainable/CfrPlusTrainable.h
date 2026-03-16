@@ -30,8 +30,10 @@ public:
     const vector<float> getAverageStrategy() override;
 
     const vector<float> getcurrentStrategy() override;
+    void getcurrentStrategyInPlace(float* buffer) override;
 
     void updateRegrets(const vector<float>& regrets, int iteration_number, const vector<float>& reach_probs) override;
+    void updateRegretsInPlace(const float* regrets, int iteration_number, const float* reach_probs) override;
 
     json dump_strategy(bool with_state) override;
 

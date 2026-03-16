@@ -1,0 +1,5 @@
+﻿"pinning_profile","threads","runs","min_solve_wall_ms","max_solve_wall_ms","avg_solve_wall_ms","median_solve_wall_ms","median_iteration","median_exploitability","median_best_response_ms","median_allocator_ms","median_allocator_mb","median_river_hit_rate","median_river_lookup_ms","median_river_build_ms","median_river_lock_wait_ms","median_action_nodes","median_chance_nodes","median_showdown_nodes","median_terminal_nodes"
+"ccd0","16","3","152062","157799","155342,67","156167","180","0,482308","723,5723","579,58","4547,38","1","2515,46","0","1456,55","532160","5290","569272","366671"
+"ccd1","16","3","161998","162449","162234,67","162257","180","0,482308","733,7249","601,84","4546,69","1","2559,1","0","1480,23","532158","5290","569256","366654"
+"none","16","3","168611","168923","168745,67","168703","180","0,482308","788,7826","583,76","4497,72","1","3528,84","0","2137,33","532133","5290","569265","366608"
+"none","32","3","161701","164451","163184,33","163401","180","0,482308","936,7342","977,19","4318,76","1","17694,58","0","11869,55","532188","5290","569301","366636"

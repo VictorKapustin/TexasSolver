@@ -1,0 +1,5 @@
+﻿"pinning_profile","threads","runs","min_solve_wall_ms","max_solve_wall_ms","avg_solve_wall_ms","median_solve_wall_ms","median_iteration","median_exploitability","median_best_response_ms","median_allocator_ms","median_allocator_mb","median_river_hit_rate","median_river_lookup_ms","median_river_build_ms","median_river_lock_wait_ms","median_action_nodes","median_chance_nodes","median_showdown_nodes","median_terminal_nodes"
+"ccd0","16","3","113246","113917","113649","113784","180","0,476144","597,4211","0","0","1","1301,06","0","632,93","532488","5290","569634","366816"
+"ccd1","16","3","112281","112810","112490,33","112380","180","0,476144","605,8202","0","0","1","1298,24","0","604,66","532488","5290","569634","366816"
+"none","16","3","116197","118766","117321,33","117001","180","0,476144","652,9966","0","0","1","2261,11","0","1200,7","532488","5290","569634","366816"
+"none","32","3","120647","123584","121719,67","120928","180","0,476144","734,9686","0","0","1","13463","0","9237,12","532488","5290","569634","366816"

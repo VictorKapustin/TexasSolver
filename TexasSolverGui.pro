@@ -58,7 +58,21 @@ QMAKE_LFLAGS += -fopenmp
 
 QMAKE_CXXFLAGS_RELEASE -= -O2
 QMAKE_CXXFLAGS_RELEASE *= -O3 -march=native
-QMAKE_LFLAGS_RELEASE -= -flto
+
+CONFIG(enable_lto, enable_lto|disable_lto) {
+    QMAKE_CXXFLAGS_RELEASE += -flto
+    QMAKE_LFLAGS_RELEASE += -flto
+}
+
+CONFIG(pgo_generate, pgo_generate|pgo_use) {
+    QMAKE_CXXFLAGS_RELEASE += -fprofile-generate
+    QMAKE_LFLAGS_RELEASE += -fprofile-generate
+}
+
+CONFIG(pgo_use, pgo_generate|pgo_use) {
+    QMAKE_CXXFLAGS_RELEASE += -fprofile-use -fprofile-correction
+    QMAKE_LFLAGS_RELEASE += -fprofile-use -fprofile-correction
+}
 QMAKE_LFLAGS += -v
 
 win32: CONFIG(release, debug|release) {

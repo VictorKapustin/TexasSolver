@@ -26,6 +26,13 @@ This guide explains how to build the `TexasSolverGui.exe` from the command line 
    mingw32-make release -j8
    ```
 
+Release uses `-O3 -march=native` by default.  
+To enable LTO explicitly, add `enable_lto` in qmake config:
+```cmd
+qmake TexasSolverConsole.pro "CONFIG+=release enable_lto"
+```
+If your MinGW linker reports widespread `multiple definition` errors, remove `enable_lto` and keep `-O3 -march=native` for that build.
+
 ### Building CLI (Console) Version
 
 If you need the terminal-based version (TexasSolverConsole.exe):
@@ -36,6 +43,22 @@ If you need the terminal-based version (TexasSolverConsole.exe):
    ```
 2. Build the executable:
    ```cmd
+   mingw32-make release -j8
+   ```
+
+### PGO Build (Optional)
+
+For profile-guided optimization in CLI:
+
+1. Build profile-generate binary:
+   ```cmd
+   qmake TexasSolverConsole.pro "CONFIG+=release enable_lto pgo_generate"
+   mingw32-make release -j8
+   ```
+2. Run representative benchmark scripts to produce profile data.
+3. Rebuild profile-use binary:
+   ```cmd
+   qmake TexasSolverConsole.pro "CONFIG+=release enable_lto pgo_use"
    mingw32-make release -j8
    ```
 

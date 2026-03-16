@@ -21,6 +21,7 @@ using namespace std;
 
 class BestResponse {
 private:
+    static constexpr int kColorIsoTableSize = 52 * 52 * 2;
     Deck& deck;
     // player -> preflop combos
     vector<vector<PrivateCards>>& private_combos;
@@ -54,7 +55,7 @@ private:
     vector<float> actionBestResponse(shared_ptr<ActionNode> node, int player, const vector<vector<float>>& reach_probs, uint64_t board,int deal);
     vector<float> terminalBestReponse(shared_ptr<TerminalNode> node, int player, const vector<vector<float>>& reach_probs, uint64_t board,int deal);
     vector<float> showdownBestResponse(shared_ptr<ShowdownNode> node, int player, const vector<vector<float>>& reach_probs,uint64_t board,int deal);
-    int color_iso_offset[52 * 52 * 2][4];
+    int color_iso_offset[kColorIsoTableSize][4];
     GameTreeNode::GameRound split_round;
 };
 

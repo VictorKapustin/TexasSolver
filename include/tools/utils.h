@@ -16,16 +16,24 @@
 #include <include/nodes/ShowdownNode.h>
 
 template <typename T>
-void exchange_color(vector<T>& value,vector<PrivateCards> range,int rank1,int rank2){
+void exchange_color_ptr(T* value, int value_size, const vector<PrivateCards>& range, int rank1, int rank2, int* privateint2ind_scratch){
 #ifdef DEBUG
-    if(value.size() != range.size()) throw runtime_error("size problem");
+    if((int)range.size() != value_size) throw runtime_error("size problem");
     if(rank1 >= rank2) throw runtime_error("rank value problem");
 #endif
-    if(value.empty())return;
-    vector<int> self_ind = vector<int>(value.size());
-    int privateint2ind[52 * 52 * 2] = {0};
-    for(std::size_t i = 0;i < range.size();i ++){
-        PrivateCards& pc = range[i];
+    if(value_size == 0) return;
+    
+    // We still need a temporary buffer for original indices, but we can reuse the scratch or put it on stack if small.
+    // However, since this is called frequently, let's use the provided scratch for everything if possible.
+    // The range.size() is typically 1326 or less.
+    thread_local vector<int> self_ind;
+    if(self_ind.size() < (size_t)value_size) self_ind.resize(value_size);
+
+    int* privateint2ind = privateint2ind_scratch;
+    std::fill(privateint2ind, privateint2ind + (52 * 52 * 2), -1);
+    
+    for(std::size_t i = 0; i < range.size(); i++){
+        const PrivateCards& pc = range[i];
         int card1 = pc.card1;
         int card2 = pc.card2;
         if(card1 > card2){
@@ -49,19 +57,21 @@ void exchange_color(vector<T>& value,vector<PrivateCards> range,int rank1,int ra
         privateint2ind[card1 * 52 + card2] = i;
     }
 
-    for(std::size_t i = 0;i < range.size();i ++) {
+    for(std::size_t i = 0; i < range.size(); i++) {
         if(self_ind[i] == -1) continue;
-        std::size_t ind = privateint2ind[self_ind[i]];
-        //cout << range[i].toString() << " ";
-        //cout << range[ind].toString() << endl;
-        if(ind != i){
-            self_ind[ind] = -1;
+        int target_ind = privateint2ind[self_ind[i]];
+        if(target_ind != (int)i && target_ind != -1){
+            self_ind[target_ind] = -1;
             T tmp = value[i];
-            value[i] = value[ind];
-            value[ind] = tmp;
+            value[i] = value[target_ind];
+            value[target_ind] = tmp;
         }
     }
-    //throw runtime_error("exiting...here...");
+}
+
+template <typename T>
+void exchange_color(vector<T>& value, const vector<PrivateCards>& range, int rank1, int rank2, int* privateint2ind_scratch){
+    exchange_color_ptr(value.data(), (int)value.size(), range, rank1, rank2, privateint2ind_scratch);
 }
 
 #endif //BINDSOLVER_UTILS_H

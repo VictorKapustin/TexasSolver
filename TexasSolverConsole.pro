@@ -18,14 +18,28 @@ win32: {
 # Optimization flags from optimized GUI build
 QMAKE_CXXFLAGS_RELEASE -= -O2
 QMAKE_CXXFLAGS_RELEASE *= -O3 -march=native
-QMAKE_LFLAGS_RELEASE -= -flto
+
+CONFIG(enable_lto, enable_lto|disable_lto) {
+    QMAKE_CXXFLAGS_RELEASE += -flto
+    QMAKE_LFLAGS_RELEASE += -flto
+}
+
+CONFIG(pgo_generate, pgo_generate|pgo_use) {
+    QMAKE_CXXFLAGS_RELEASE += -fprofile-generate
+    QMAKE_LFLAGS_RELEASE += -fprofile-generate
+}
+
+CONFIG(pgo_use, pgo_generate|pgo_use) {
+    QMAKE_CXXFLAGS_RELEASE += -fprofile-use -fprofile-correction
+    QMAKE_LFLAGS_RELEASE += -fprofile-use -fprofile-correction
+}
 
 # Deployment automation
 win32: CONFIG(release, debug|release) {
     QMAKE_POST_LINK += $$quote(copy /y C:\Qt\Tools\mingw810_64\bin\libgomp-1.dll release)
 }
 
-INCLUDEPATH += .
+INCLUDEPATH += . include
 
 SOURCES += \
     src/console.cpp \
