@@ -30,8 +30,8 @@ private:
     constexpr static float gamma = 2;
     constexpr static float theta = 0.9f;
     vector<CumRplusStorage> cum_r_plus;
+    // Caches 1 / sum(max(r_plus, 0)) for the current regret state.
     vector<float> r_plus_sum;
-    vector<float> r_plus_local;
 public:
     DiscountedCfrTrainableHF(vector<PrivateCards> *privateCards,
                            ActionNode &actionNode);

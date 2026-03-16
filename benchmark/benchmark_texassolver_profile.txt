@@ -29,6 +29,7 @@ set_accuracy 0.5
 set_max_iteration 300
 set_print_interval 10
 set_use_isomorphism 1
+set_use_halffloats 0
 set_profile_mode 1
 set_log_file benchmark/benchmark_outputs/texassolver_profile_log.jsonl
 start_solve

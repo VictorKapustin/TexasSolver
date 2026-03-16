@@ -42,7 +42,7 @@ shared_ptr<Trainable> ActionNode::getTrainable(int i,bool create_on_site, int us
         throw runtime_error(tfm::format("size unacceptable %s > %s ",i,this->trainables.size()));
     }
     if(this->trainables[i] == nullptr && create_on_site){
-        switch ((this->getRound() == GameTreeNode::RIVER) ? use_halffloats : 0 ){
+        switch (use_halffloats){
         case 0:
             this->trainables[i] = make_shared<DiscountedCfrTrainable>(player_privates,*this);
             break;

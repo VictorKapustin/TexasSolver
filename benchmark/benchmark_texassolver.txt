@@ -29,6 +29,7 @@ set_accuracy 0.3
 set_max_iteration 200
 set_print_interval 10
 set_use_isomorphism 1
+set_use_halffloats 0
 start_solve
 set_dump_rounds 1
 dump_result output_result.json

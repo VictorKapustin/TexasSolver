@@ -5,6 +5,38 @@
 #include "include/GameTree.h"
 
 #include <utility>
+#include <include/tools/half-1-12-0.h>
+
+namespace {
+using half_float::half;
+
+struct TrainableStorageLayout {
+    size_t ev_bytes = sizeof(float);
+    size_t r_plus_bytes = sizeof(float);
+    size_t cum_r_plus_bytes = sizeof(float);
+};
+
+TrainableStorageLayout getTrainableStorageLayout(int use_halffloats) {
+    switch (use_halffloats) {
+    case 1:
+        return TrainableStorageLayout{sizeof(half), sizeof(float), sizeof(float)};
+    case 2:
+        return TrainableStorageLayout{sizeof(half), sizeof(half), sizeof(half)};
+    case 0:
+    default:
+        return TrainableStorageLayout{};
+    }
+}
+
+long long estimateActionTrainableBytes(size_t action_count, int range_size, int use_halffloats, int num_current_deal) {
+    const TrainableStorageLayout layout = getTrainableStorageLayout(use_halffloats);
+    const long long entry_count = static_cast<long long>(action_count) * static_cast<long long>(range_size);
+    const long long per_trainable_bytes =
+            entry_count * static_cast<long long>(layout.ev_bytes + layout.r_plus_bytes + layout.cum_r_plus_bytes) +
+            static_cast<long long>(range_size) * static_cast<long long>(sizeof(float));
+    return per_trainable_bytes * static_cast<long long>(num_current_deal);
+}
+} // namespace
 
 StreetSetting GameTree::getSettings(int int_round, int player,GameTreeBuildingSettings& gameTreeBuildingSettings){
     GameTreeNode::GameRound round = GameTreeNode::intToGameRound(int_round);
@@ -516,31 +548,30 @@ GameTreeNode::GameRound GameTree::strToGameRound(const string& round) {
     return game_round;
 }
 
-long long GameTree::estimate_tree_memory(int deck_num,int p1range_num,int p2range_num,int num_current_deal){
-    return this->re_estimate_tree_memory(this->root,deck_num, p1range_num, p2range_num, num_current_deal);
+long long GameTree::estimate_tree_memory(int deck_num,int p1range_num,int p2range_num,int use_halffloats,int num_current_deal){
+    return this->re_estimate_tree_memory(this->root,deck_num, p1range_num, p2range_num, use_halffloats, num_current_deal);
 }
 
-long long GameTree::re_estimate_tree_memory(const shared_ptr<GameTreeNode>& node,int deck_num,int p1range_num,int p2range_num,int num_current_deal){
+long long GameTree::re_estimate_tree_memory(const shared_ptr<GameTreeNode>& node,int deck_num,int p1range_num,int p2range_num,int use_halffloats,int num_current_deal){
     if(node->getType() == GameTreeNode::ACTION){
         shared_ptr<ActionNode> action_node = std::dynamic_pointer_cast<ActionNode>(node);
         vector<shared_ptr<GameTreeNode>> childrens = action_node->getChildrens();
-        vector<GameActions> actions = action_node->getActions();
 
         long long retnum = 0;
         for(std::size_t i = 0;i < childrens.size();i++){
             shared_ptr<GameTreeNode> one_child = childrens[i];
-            retnum += re_estimate_tree_memory(one_child,deck_num, p1range_num, p2range_num, num_current_deal);
+            retnum += re_estimate_tree_memory(one_child,deck_num, p1range_num, p2range_num, use_halffloats, num_current_deal);
         }
         if(action_node->getPlayer() == 0){
-            retnum += num_current_deal * p1range_num * (childrens.size() + 1) * 3;
+            retnum += estimateActionTrainableBytes(childrens.size(), p1range_num, use_halffloats, num_current_deal);
         }else{
-            retnum += num_current_deal * p2range_num * (childrens.size() + 1) * 3;
+            retnum += estimateActionTrainableBytes(childrens.size(), p2range_num, use_halffloats, num_current_deal);
         }
         return retnum;
     }else if(node->getType() == GameTreeNode::CHANCE){
         shared_ptr<ChanceNode> chance_node = std::dynamic_pointer_cast<ChanceNode>(node);
         shared_ptr<GameTreeNode> children = chance_node->getChildren();
-        return re_estimate_tree_memory(children,deck_num, p1range_num, p2range_num, num_current_deal * (deck_num));
+        return re_estimate_tree_memory(children,deck_num, p1range_num, p2range_num, use_halffloats, num_current_deal * (deck_num));
     }
     return 0;
 }

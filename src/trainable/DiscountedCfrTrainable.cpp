@@ -56,43 +56,40 @@ void DiscountedCfrTrainable::copyStrategy(shared_ptr<Trainable> other_trainable)
     shared_ptr<DiscountedCfrTrainable> trainable = dynamic_pointer_cast<DiscountedCfrTrainable>(other_trainable);
     this->r_plus.assign(trainable->r_plus.begin(),trainable->r_plus.end());
     this->cum_r_plus.assign(trainable->cum_r_plus.begin(),trainable->cum_r_plus.end());
+    this->r_plus_sum.assign(trainable->r_plus_sum.begin(), trainable->r_plus_sum.end());
 }
 
 const vector<float> DiscountedCfrTrainable::getcurrentStrategyNoCache() {
     vector<float> current_strategy;
     current_strategy = vector<float>(this->action_number * this->card_number);
-    if(this->r_plus_sum.empty()){
-        fill(current_strategy.begin(),current_strategy.end(),1.0 / this->action_number);
-    }else {
-        for (int action_id = 0; action_id < action_number; action_id++) {
-            for (int private_id = 0; private_id < this->card_number; private_id++) {
-                int index = action_id * this->card_number + private_id;
-                if(this->r_plus_sum[private_id] != 0) {
-                    current_strategy[index] = max(float(0.0),this->r_plus[index]) / this->r_plus_sum[private_id];
-                }else{
-                    current_strategy[index] = 1.0 / (this->action_number);
-                }
-#ifdef DEBUG
-                if(this->r_plus[index] != this->r_plus[index]) throw runtime_error("nan found");
-#endif
+    const float uniform_strategy = 1.0f / this->action_number;
+    for (int action_id = 0; action_id < action_number; action_id++) {
+        for (int private_id = 0; private_id < this->card_number; private_id++) {
+            int index = action_id * this->card_number + private_id;
+            float inv_r_plus_sum = this->r_plus_sum[private_id];
+            if(inv_r_plus_sum != 0.0f) {
+                current_strategy[index] = max(0.0f,this->r_plus[index]) * inv_r_plus_sum;
+            }else{
+                current_strategy[index] = uniform_strategy;
             }
+#ifdef DEBUG
+            if(this->r_plus[index] != this->r_plus[index]) throw runtime_error("nan found");
+#endif
         }
     }
     return current_strategy;
 }
 
 void DiscountedCfrTrainable::getcurrentStrategyInPlace(float* buffer) {
-    if(this->r_plus_sum.empty()){
-        std::fill(buffer, buffer + (this->action_number * this->card_number), 1.0 / this->action_number);
-    }else {
-        for (int action_id = 0; action_id < action_number; action_id++) {
-            for (int private_id = 0; private_id < this->card_number; private_id++) {
-                int index = action_id * this->card_number + private_id;
-                if(this->r_plus_sum[private_id] != 0) {
-                    buffer[index] = max(float(0.0),this->r_plus[index]) / this->r_plus_sum[private_id];
-                }else{
-                    buffer[index] = 1.0 / (this->action_number);
-                }
+    const float uniform_strategy = 1.0f / this->action_number;
+    for (int action_id = 0; action_id < action_number; action_id++) {
+        for (int private_id = 0; private_id < this->card_number; private_id++) {
+            int index = action_id * this->card_number + private_id;
+            float inv_r_plus_sum = this->r_plus_sum[private_id];
+            if(inv_r_plus_sum != 0.0f) {
+                buffer[index] = max(0.0f,this->r_plus[index]) * inv_r_plus_sum;
+            }else{
+                buffer[index] = uniform_strategy;
             }
         }
     }
@@ -135,6 +132,11 @@ void DiscountedCfrTrainable::updateRegrets(const vector<float>& regrets, int ite
             // this.cum_r_plus_sum[private_id] += this.cum_r_plus[index];
         }
     }
+    for (int private_id = 0; private_id < this->card_number; private_id++) {
+        if (this->r_plus_sum[private_id] != 0.0f) {
+            this->r_plus_sum[private_id] = 1.0f / this->r_plus_sum[private_id];
+        }
+    }
     vector<float> current_strategy = this->getcurrentStrategyNoCache();
     float strategy_coef = pow(((float)iteration_number / (iteration_number + 1)),gamma);
     for (int action_id = 0;action_id < action_number;action_id ++) {
@@ -168,16 +170,23 @@ void DiscountedCfrTrainable::updateRegretsInPlace(const float* regrets, int iter
         }
     }
 
-    // Reuse a small local buffer for strategy if needed, but here we can just compute it on the fly or use the same logic
+    for (int private_id = 0; private_id < this->card_number; private_id++) {
+        if (this->r_plus_sum[private_id] != 0.0f) {
+            this->r_plus_sum[private_id] = 1.0f / this->r_plus_sum[private_id];
+        }
+    }
+
+    const float uniform_strategy = 1.0f / this->action_number;
     float strategy_coef = pow(((float)iteration_number / (iteration_number + 1)), gamma);
     for (int action_id = 0; action_id < action_number; action_id++) {
         for (int private_id = 0; private_id < this->card_number; private_id++) {
             int index = action_id * this->card_number + private_id;
+            float inv_r_plus_sum = this->r_plus_sum[private_id];
             float strat;
-            if (this->r_plus_sum[private_id] != 0) {
-                strat = max(float(0.0), this->r_plus[index]) / this->r_plus_sum[private_id];
+            if (inv_r_plus_sum != 0.0f) {
+                strat = max(0.0f, this->r_plus[index]) * inv_r_plus_sum;
             } else {
-                strat = 1.0 / (this->action_number);
+                strat = uniform_strategy;
             }
             this->cum_r_plus[index] *= this->theta;
             this->cum_r_plus[index] += strat * strategy_coef;

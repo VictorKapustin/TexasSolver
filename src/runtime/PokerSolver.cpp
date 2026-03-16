@@ -67,7 +67,7 @@ void PokerSolver::stop(){
     }
 }
 
-long long PokerSolver::estimate_tree_memory(QString range1,QString range2,QString board){
+long long PokerSolver::estimate_tree_memory(QString range1,QString range2,QString board,int use_halffloats){
     if(this->game_tree == nullptr){
         qDebug().noquote() << QObject::tr("Please buld tree first.");
         return 0;
@@ -84,7 +84,12 @@ long long PokerSolver::estimate_tree_memory(QString range1,QString range2,QStrin
 
         vector<PrivateCards> range1 = PrivateRangeConverter::rangeStr2Cards(player1RangeStr,initialBoard);
         vector<PrivateCards> range2 = PrivateRangeConverter::rangeStr2Cards(player2RangeStr,initialBoard);
-        return this->game_tree->estimate_tree_memory(this->deck.getCards().size() - initialBoard.size(),range1.size(),range2.size());
+        return this->game_tree->estimate_tree_memory(
+                this->deck.getCards().size() - initialBoard.size(),
+                range1.size(),
+                range2.size(),
+                use_halffloats
+        );
     }
 }
 

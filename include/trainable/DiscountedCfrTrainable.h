@@ -22,6 +22,7 @@ private:
     constexpr static float gamma = 2;
     constexpr static float theta = 0.9f;
     // TODO 這裏能不能减肥
+    // Caches 1 / sum(max(r_plus, 0)) for the current regret state.
     vector<float> r_plus_sum;
     vector<float> cum_r_plus;
     //vector<float> cum_r_plus_sum;

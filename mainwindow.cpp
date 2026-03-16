@@ -584,26 +584,21 @@ float iso_corh(QString board){
 
 void MainWindow::on_estimateMemoryButtom_clicked()
 {
-    long long memory_float = this->qSolverJob->estimate_tree_memory(this->ui->ipRangeText->toPlainText(),this->ui->oopRangeText->toPlainText(),this->ui->boardText->toPlainText());
-    // float32 should take 4bytes
+    long long memory_bytes = this->qSolverJob->estimate_tree_memory(
+            this->ui->ipRangeText->toPlainText(),
+            this->ui->oopRangeText->toPlainText(),
+            this->ui->boardText->toPlainText(),
+            this->ui->useHalfFloats_box->currentIndex()
+    );
     float corh = 1;
     if(this->ui->useIsoCheck->isChecked()){
         corh =iso_corh(this->ui->boardText->toPlainText());
     }
-    switch(this->ui->useHalfFloats_box->currentIndex()){
-    case 0:
-        break;
-    case 1:
-        corh *= 0.75;
-        break;
-    case 2:
-        corh *= 0.5;
-        break;
-    }
-    float memory_mb = (float)memory_float / 1024 / 1024 * corh * 4 ;
-    float memory_gb = (float)memory_float / 1024 / 1024 / 1024 * corh * 4;
+    double adjusted_memory_bytes = static_cast<double>(memory_bytes) * corh;
+    float memory_mb = static_cast<float>(adjusted_memory_bytes / 1024.0 / 1024.0);
+    float memory_gb = static_cast<float>(adjusted_memory_bytes / 1024.0 / 1024.0 / 1024.0);
     QString message;
-    if(memory_gb == 0){
+    if(memory_bytes == 0){
         message = tr("Please build tree first.");
     }else if(memory_gb < 1){
         message = tr("Estimated Memory Usage: ") + QString::number(memory_mb,'f',0) + tr(" Mb") +
