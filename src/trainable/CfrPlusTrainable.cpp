@@ -23,11 +23,15 @@ CfrPlusTrainable::CfrPlusTrainable(vector<PrivateCards>* privateCards, ActionNod
 
 void CfrPlusTrainable::getcurrentStrategyInPlace(float* buffer) {
     const float uniform = 1.0f / this->action_number;
+    const float* const rp = r_plus.data();
+    const float* const rps = r_plus_sum.data();
+    const int N = card_number;
     for (int action_id = 0; action_id < action_number; action_id++) {
-        for (int private_id = 0; private_id < card_number; private_id++) {
-            int index = action_id * card_number + private_id;
-            float inv_sum = r_plus_sum[private_id];
-            buffer[index] = (inv_sum != 0.0f) ? r_plus[index] * inv_sum : uniform;
+        const int base = action_id * N;
+        #pragma GCC ivdep
+        for (int private_id = 0; private_id < N; private_id++) {
+            float inv_sum = rps[private_id];
+            buffer[base + private_id] = (inv_sum != 0.0f) ? rp[base + private_id] * inv_sum : uniform;
         }
     }
 }
@@ -73,18 +77,24 @@ void CfrPlusTrainable::updateRegrets(const vector<float>& regrets, int iteration
 void CfrPlusTrainable::updateRegretsInPlace(const float* regrets, int iteration_number, const float* reach_probs) {
     // CFR+: r_plus = max(0, r_plus + cfr_regret)  — never goes negative
     std::fill(r_plus_sum.begin(), r_plus_sum.end(), 0.0f);
+    float* const rp = r_plus.data();
+    float* const rps = r_plus_sum.data();
+    float* const cum = cum_r_plus.data();
+    const int N = card_number;
     for (int action_id = 0; action_id < action_number; action_id++) {
-        for (int private_id = 0; private_id < card_number; private_id++) {
-            int index = action_id * card_number + private_id;
-            r_plus[index] = max(0.0f, r_plus[index] + regrets[index]);
-            r_plus_sum[private_id] += r_plus[index];
+        const int base = action_id * N;
+        #pragma GCC ivdep
+        for (int private_id = 0; private_id < N; private_id++) {
+            float r = max(0.0f, rp[base + private_id] + regrets[base + private_id]);
+            rp[base + private_id] = r;
+            rps[private_id] += r;
         }
     }
 
     // Cache inverse sum for fast getcurrentStrategyInPlace
-    for (int private_id = 0; private_id < card_number; private_id++) {
-        if (r_plus_sum[private_id] != 0.0f)
-            r_plus_sum[private_id] = 1.0f / r_plus_sum[private_id];
+    for (int private_id = 0; private_id < N; private_id++) {
+        if (rps[private_id] != 0.0f)
+            rps[private_id] = 1.0f / rps[private_id];
     }
 
     // Quadratic average: cum_r_plus += t^2 * sigma_t  (Tammelin 2015 CFR+ recommendation)
@@ -92,11 +102,12 @@ void CfrPlusTrainable::updateRegretsInPlace(const float* regrets, int iteration_
     const float t2 = (float)iteration_number * (float)iteration_number;
     const float uniform = 1.0f / action_number;
     for (int action_id = 0; action_id < action_number; action_id++) {
-        for (int private_id = 0; private_id < card_number; private_id++) {
-            int index = action_id * card_number + private_id;
-            float inv_sum = r_plus_sum[private_id];
-            float strat = (inv_sum != 0.0f) ? r_plus[index] * inv_sum : uniform;
-            cum_r_plus[index] += strat * t2;
+        const int base = action_id * N;
+        #pragma GCC ivdep
+        for (int private_id = 0; private_id < N; private_id++) {
+            float inv_sum = rps[private_id];
+            float strat = (inv_sum != 0.0f) ? rp[base + private_id] * inv_sum : uniform;
+            cum[base + private_id] += strat * t2;
         }
     }
 }

@@ -84,15 +84,17 @@ void DiscountedCfrTrainableSF::setEv(const vector<float>& evs){
 
 void DiscountedCfrTrainableSF::getcurrentStrategyInPlace(float* buffer) {
     const float uniform_strategy = 1.0f / this->action_number;
+    const float* const rp = r_plus.data();
+    const float* const rps = r_plus_sum.data();
+    const int N = card_number;
     for (int action_id = 0; action_id < action_number; action_id++) {
-        for (int private_id = 0; private_id < this->card_number; private_id++) {
-            int index = action_id * this->card_number + private_id;
-            float inv_r_plus_sum = this->r_plus_sum[private_id];
-            if (inv_r_plus_sum != 0.0f) {
-                buffer[index] = max(0.0f, (float)this->r_plus[index]) * inv_r_plus_sum;
-            } else {
-                buffer[index] = uniform_strategy;
-            }
+        const int base = action_id * N;
+        #pragma GCC ivdep
+        for (int private_id = 0; private_id < N; private_id++) {
+            float inv_rps = rps[private_id];
+            buffer[base + private_id] = (inv_rps != 0.0f)
+                ? max(0.0f, rp[base + private_id]) * inv_rps
+                : uniform_strategy;
         }
     }
 }
@@ -102,33 +104,29 @@ void DiscountedCfrTrainableSF::updateRegrets(const vector<float>& regrets, int i
 }
 
 void DiscountedCfrTrainableSF::updateRegretsInPlace(const float* regrets, int iteration_number, const float* reach_probs) {
-    auto alpha_coef = pow(iteration_number, this->alpha);
-    alpha_coef = alpha_coef / (1 + alpha_coef);
+    // Compute as double for precision, store as float to keep inner loop in float SIMD
+    const double _acp = pow((double)iteration_number, (double)this->alpha);
+    const float alpha_coef = (float)(_acp / (1.0 + _acp));
 
     // Completely bounded, no dynamic memory heap allocations inside the rapid recursion path!
     std::fill(this->r_plus_sum.begin(), this->r_plus_sum.end(), 0.0f);
-    
+    float* const rp = r_plus.data();
+    float* const rps = r_plus_sum.data();
+    const int N = card_number;
     for (int action_id = 0; action_id < action_number; action_id++) {
-        for (int private_id = 0; private_id < this->card_number; private_id++) {
-            int index = action_id * this->card_number + private_id;
-            float one_reg = regrets[index];
-
-            // 更新 R+
-            float this_r_plus_of_index = this->r_plus[index];
-            this_r_plus_of_index = one_reg + this_r_plus_of_index;
-            if (this_r_plus_of_index > 0) {
-                this_r_plus_of_index *= alpha_coef;
-            } else {
-                this_r_plus_of_index *= beta;
-            }
-            this->r_plus_sum[private_id] += max(float(0.0), this_r_plus_of_index);
-            this->r_plus[index] = this_r_plus_of_index;
+        const int base = action_id * N;
+        #pragma GCC ivdep
+        for (int private_id = 0; private_id < N; private_id++) {
+            float v = rp[base + private_id] + regrets[base + private_id];
+            float r = v * (v > 0.0f ? alpha_coef : beta);
+            rp[base + private_id] = r;
+            rps[private_id] += max(0.0f, r);
         }
     }
 
-    for (int private_id = 0; private_id < this->card_number; private_id++) {
-        if (this->r_plus_sum[private_id] != 0.0f) {
-            this->r_plus_sum[private_id] = 1.0f / this->r_plus_sum[private_id];
+    for (int private_id = 0; private_id < N; private_id++) {
+        if (rps[private_id] != 0.0f) {
+            rps[private_id] = 1.0f / rps[private_id];
         }
     }
 
@@ -144,35 +142,35 @@ void DiscountedCfrTrainableSF::updateRegretsInPlace(const float* regrets, int it
 
     if (do_cum_update) {
         const float uniform_strategy = 1.0f / this->action_number;
-        float strategy_coef = pow(((float)iteration_number / (iteration_number + 1)), gamma);
+        const float strategy_coef = (float)pow(((float)iteration_number / (iteration_number + 1)), (double)gamma);
         const float freeze_thr = Trainable::s_freeze_threshold;
+        float* const cum = cum_r_plus.data();
         if (freeze_thr > 0.0f) {
             float max_delta = 0.0f;
             for (int action_id = 0; action_id < action_number; action_id++) {
-                for (int private_id = 0; private_id < this->card_number; private_id++) {
-                    int index = action_id * this->card_number + private_id;
-                    float inv_r_plus_sum = this->r_plus_sum[private_id];
-                    float strat = (inv_r_plus_sum != 0.0f)
-                        ? max(0.0f, (float)this->r_plus[index]) * inv_r_plus_sum
+                const int base = action_id * N;
+                for (int private_id = 0; private_id < N; private_id++) {
+                    float strat = (rps[private_id] != 0.0f)
+                        ? max(0.0f, rp[base + private_id]) * rps[private_id]
                         : uniform_strategy;
-                    float old_val = this->cum_r_plus[index];
-                    float new_val = old_val * this->theta + strat * strategy_coef;
+                    float old_val = cum[base + private_id];
+                    float new_val = old_val * theta + strat * strategy_coef;
                     float d = new_val - old_val; if (d < 0) d = -d;
                     if (d > max_delta) max_delta = d;
-                    this->cum_r_plus[index] = new_val;
+                    cum[base + private_id] = new_val;
                 }
             }
             cum_frozen_ = (max_delta < freeze_thr);
             if (cum_frozen_) frozen_skip_count_ = 0;
         } else {
             for (int action_id = 0; action_id < action_number; action_id++) {
-                for (int private_id = 0; private_id < this->card_number; private_id++) {
-                    int index = action_id * this->card_number + private_id;
-                    float inv_r_plus_sum = this->r_plus_sum[private_id];
-                    float strat = (inv_r_plus_sum != 0.0f)
-                        ? max(0.0f, (float)this->r_plus[index]) * inv_r_plus_sum
+                const int base = action_id * N;
+                #pragma GCC ivdep
+                for (int private_id = 0; private_id < N; private_id++) {
+                    float strat = (rps[private_id] != 0.0f)
+                        ? max(0.0f, rp[base + private_id]) * rps[private_id]
                         : uniform_strategy;
-                    this->cum_r_plus[index] = this->cum_r_plus[index] * this->theta + strat * strategy_coef;
+                    cum[base + private_id] = cum[base + private_id] * theta + strat * strategy_coef;
                 }
             }
         }

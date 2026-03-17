@@ -504,18 +504,28 @@ P4.2 Arena allocation для children/trainables
 Устраняет overhead аллокатора при создании deal-specific trainable nodes.
 Конкретно: заменить `new/delete` на arena с bump-pointer allocation и bulk reset.
 
-P9. SIMD векторизация inner loops
+P9. SIMD векторизация inner loops (код завершён 2026-03-17, benchmark pending)
 Критичность: Medium-High. Rough-цель: 2–4x ускорение arithmetic-intensive частей.
 
-Inner loops в `updateRegretsInPlace` и `getcurrentStrategyInPlace` — это float-array операции:
-- `r_plus[i] = max(r_plus[i] * discount + cfr_regret[i], 0.0f)` — vectorizable
-- `strategy[i] = r_plus[i] / sum` — vectorizable (reciprocal + multiply)
-- Эти loops работают над массивами размером `action_count * card_count` = потенциально тысячи элементов
-На arm64 (macOS, Apple Silicon): NEON SIMD даёт 4-float-width. ARM intrinsics: `vaddq_f32`, `vmaxq_f32`, `vmulq_f32`.
-На x86 (5950X): AVX2 даёт 8-float-width. Intrinsics: `_mm256_add_ps`, `_mm256_max_ps`, `_mm256_mul_ps`.
-Компилятор (`-O3 -march=native`) часто auto-vectorizes если loop нет side-effects и нет alias — проверить сначала.
-Если auto-vectorization не работает: explicit intrinsics или Eigen/ISPC.
-Prerequisite: P7 (CFR+) должен быть сделан первым, чтобы не переписывать SIMD дважды.
+Что было сделано:
+- **`alpha_coef` double → float** во всех трёх trainable (DCFR, SF): `auto alpha_coef = pow(...)` возвращал `double`, что вызывало неявный upcast float→double на КАЖДОМ умножении внутри inner loop, полностью блокируя float SIMD. Исправлено: `double` precision только для вычисления `pow`; результат кастуется в `float` до входа в loop.
+- **if/else → ternary** в r_plus update и getcurrentStrategyInPlace: ветвление `if (v > 0) *= alpha_coef; else *= beta` заменено на `v * (v > 0.0f ? alpha_coef : beta)`. Без явного ternary clang/gcc консервативно воздерживались от BLEND/SELECT. Теперь компилятор может эмитировать `vbslq_f32` (NEON) / `vblendvps` (AVX).
+- **Локальные raw pointer'ы** (`rp`, `rps`, `cum`) + хойстинг `base = action_id * N`: устранён potential alias-analysis pessimism от доступа через `this->vector.data()` на каждой итерации.
+- **`#pragma GCC ivdep`** на inner loops: явно говорит компилятору "нет loop-carried data dependencies" → разрешает vectorize даже если alias-analysis неполный. Поддерживается clang и gcc.
+- **FMA-совместимый cum_r_plus**: `cum[i] *= theta; cum[i] += strat * coef` → `cum[i] = cum[i] * theta + strat * coef` — одна операция, явно fusable в `fmadd`.
+- **CFR+ `updateRegretsInPlace`**: r_plus loop и cum_r_plus loop также получили `rp/rps/cum` pointers и `#pragma GCC ivdep`.
+- HF2 вариант (`DiscountedCfrTrainableHF`) — не изменён: там `half` conversions в inner loop необходимы для корректности и inherently предотвращают float SIMD.
+
+Файлы: `src/trainable/DiscountedCfrTrainable.cpp`, `src/trainable/CfrPlusTrainable.cpp`, `src/trainable/DiscountedCfrTrainableSF.cpp`.
+
+Ожидаемый эффект:
+- `strategy_fetch_ms` и `regret_update_ms` должны упасть на 20–50% для HF0 на arm64 (NEON 4-wide) и до 2x на 5950X (AVX2 8-wide).
+- Rough-цель 2–4x была для arithmetic-heavy isolated loops; с учётом overhead вокруг loops реальный wall-clock win ожидается меньше — порядка 10–30%.
+
+TODO P9 (benchmark results — заполнить после прогона):
+- Прогнать quick benchmark (120 iter, HF0, none/14t) до/после: `strategy_fetch_ms`, `regret_update_ms`, wall-clock.
+- Если auto-vectorization не даёт ощутимого выигрыша по assembly: рассмотреть explicit NEON intrinsics для arm64 (vaddq_f32, vmaxq_f32, vbslq_f32).
+- После замера добавить строку "## P9 Benchmark Results" в этот раздел.
 
 P10. Time-budget solve mode
 Критичность: High для продукта, Low для benchmarks. Effort: Low.
@@ -544,11 +554,11 @@ P12. Tree simplification / bet-size reduction (последняя очередь
 
 Приоритет по критичности (обновлено 2026-03, real-time advisor цель)
 
-Завершено: P0, P1, P2, P3.1, P5, P6.1, P4.1, **P7**, **P8.1** (shared_timed_mutex), **P8.2**, **P8.3**, **P4.2** (unique_ptr + raw Trainable*).
+Завершено: P0, P1, P2, P3.1, P5, P6.1, P4.1, **P7**, **P8.1** (shared_timed_mutex), **P8.2**, **P8.3**, **P4.2** (unique_ptr + raw Trainable*), **P9** (code done, benchmark pending).
 Исследовано и закрыто: P3.2, P6.2 (not useful < 50 iter).
 
 Следующая очередь (code-level, в порядке приоритета):
-  1. **P9**: SIMD векторизация inner loops (P7 завершён, P4.2 завершён — теперь можно)
+  1. **P9**: ~~SIMD векторизация inner loops~~ — код завершён 2026-03-17, нужен benchmark
   2. **P10**: Time-budget API — low effort, высокий продуктовый impact
 
 После исчерпания code-level:
