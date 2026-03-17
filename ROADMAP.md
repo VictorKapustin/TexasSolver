@@ -327,30 +327,34 @@ P6. Алгоритмические ускорители без смены кла
 - `P6.4`: Lazy regret updates — пересчитывать стратегию реже (каждые N итераций) для узлов с малым изменением regret.
 - Переход на CFR+ (regret clipping к 0) мог бы сделать RBP значительно агрессивнее, но потребует валидации convergence properties для текущего дерева.
 
-P6.2. Strategy freezing для converged trainables (реализовано, ожидает benchmark)
-Критичность: High. Rough-цель: ~5-15% на regret_update_ms при достаточной freeze rate.
+P6.2. Strategy freezing для converged trainables (ЗАКРЫТО — не применимо для real-time цели)
+Критичность: N/A для real-time advisor. Применимо только для long solves (500+ iter).
 
 Что было сделано:
 - В каждый из трёх trainable вариантов (`DiscountedCfrTrainable`, `DiscountedCfrTrainableHF`, `DiscountedCfrTrainableSF`) добавлены поля `cum_frozen_` (bool) и `frozen_skip_count_` (int).
-- В `updateRegretsInPlace` добавлена логика freeze: фаза обновления `r_plus` (определяет текущую стратегию) всегда выполняется; фаза обновления `cum_r_plus` (аккумулятор средней стратегии) пропускается, если trainable заморожен.
-- Детекция заморозки: во время цикла `cum_r_plus` отслеживается `max_delta = max(|new_val - old_val|)` по всем элементам. Если `max_delta < freeze_threshold`, trainable помечается как замороженный (`cum_frozen_ = true`).
-- Авторазморозка: каждые 50 пропущенных итераций выполняется принудительный полный пересчёт с новой проверкой порога. Это предотвращает бесконечное зависание в замороженном состоянии при изменении регретов.
-- При `freeze_threshold = 0` (default) весь freeze path не активируется: `freeze_thr > 0.0f` ветка никогда не входит в inner loop, нулевой overhead.
-- Добавлен CLI команда `set_strategy_freeze_threshold <value>` (e.g. `0.001`). Значение прокинуто через `CommandLineTool → PokerSolver::train() → PCfrSolver → Trainable::setGlobalFreezeThreshold()`.
-- В `Trainable.h` добавлены `inline static float s_freeze_threshold` и `virtual bool isCumFrozen() const`.
-- Добавлена telemetry: `pruning.frozen_cum_updates` в benchmark JSON (gated on `profile_enabled`, нулевой overhead в production run).
+- В `updateRegretsInPlace` добавлена логика freeze: фаза обновления `r_plus` всегда выполняется; фаза обновления `cum_r_plus` пропускается если trainable заморожен.
+- Детекция заморозки по `max_delta < freeze_threshold`; авторазморозка каждые 50 итераций.
+- CLI: `set_strategy_freeze_threshold <value>`. При 0 (default) — нулевой overhead.
+- Telemetry: `pruning.frozen_cum_updates` в benchmark JSON.
 
-Архитектурное решение — почему только `cum_r_plus`:
-- `r_plus` определяет текущую стратегию, которую solver читает через `getcurrentStrategyInPlace()` на каждом шаге. Его нельзя пропускать без нарушения сходимости.
-- `cum_r_plus` — это аккумулятор средней стратегии, который нужен только для финального вывода (`getAverageStrategy()`). Когда стратегия converged, его обновление вносит изменения порядка `max_delta`, что и является критерием заморозки.
-- Таким образом, заморозка `cum_r_plus` безопасна для сходимости и не влияет на exploitability во время solve.
+Результаты бенчмарка sweep (14 CPU, macOS arm64, 121 iter):
 
-TODO — запустить benchmark и зафиксировать результаты:
-- Smoke run: `set_strategy_freeze_threshold 0.001` на quick profile (`none / 32 / 2 runs / 120 iter / HF0`).
-- Сравнить `regret_update_ms` и `frozen_cum_updates` в JSONL против baseline `matrix_20260316_222631`.
-- Проверить exploitability drift: должен отсутствовать или быть пренебрежимо малым (freeze не затрагивает `r_plus`).
-- Подобрать оптимальный threshold: начать с `0.001`, попробовать `0.0001` и `0.01`.
-- Если freeze rate недостаточна (< 20% trainables), проверить профиль `cum_r_plus` delta по итерациям в logfile.
+| Метрика | Baseline (matrix_20260316) | 0.0001 | 0.001 | 0.01 |
+| :--- | :--- | :--- | :--- | :--- |
+| Solve wall-clock (ms) | 40136 | 45535 | 45535 | 176251* |
+| Regret update (ms) | 909.70 | 5282.76 | 5282.76 | 13839.16* |
+| Exploitability | 0.9402† | 16.06% | 16.06% | 16.06% |
+| Frozen updates | 0 | 0 | 0 | 0 |
+
+*0.01 sweep: inflated из-за system noise (river_cache.lock_wait spike), не из-за логики оптимизации.
+†Baseline записан с другим профилем (разные итерации/потоки), прямое сравнение некорректно.
+
+Вывод и закрытие P6.2:
+- `frozen_cum_updates = 0` во всех трёх sweep при 121 итерации. Стратегия за это время не успевает converge ни при каком threshold.
+- Freezing принципиально рассчитан на long solve (500–1000+ итераций): там `cum_r_plus` действительно стабилизируется и пропускать его обновления безопасно.
+- Для целевого профиля real-time advisor (≤50 итераций / 5–10 секунд) P6.2 даёт ноль пользы.
+- Код остаётся в дереве с нулевым overhead при `freeze_threshold = 0` (default); если продукт вернётся к long-solve сценарию, фичу можно включить без доработок.
+- **P6.2 закрыт как не применимый к новой цели.**
 
 P7. Большие архитектурные ускорители
 Критичность: Medium/High. Выигрыш: 2-10x, но уже с компромиссами и большим объёмом работ.

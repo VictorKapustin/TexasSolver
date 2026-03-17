@@ -1,12 +1,7 @@
-#-------------------------------------------------
-#
-# Project created by QtCreator 2021-09-18T11:22:44
-#
-#-------------------------------------------------
-
 QT       += core gui
-
 greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
+
+INCLUDEPATH += . include
 
 TARGET = TexasSolverGui
 TEMPLATE = app
@@ -27,16 +22,14 @@ TRANSLATIONS =  lang_cn.ts\
 
 
 macx: {
-QMAKE_CXXFLAGS += -Xpreprocessor -fopenmp -lomp -I/usr/local/include
-}
+    # OpenMP support via Homebrew
+    QMAKE_CXXFLAGS += -Xpreprocessor -fopenmp
+    QMAKE_LFLAGS += -lomp
+    INCLUDEPATH += /opt/homebrew/opt/libomp/include
+    LIBS += -L/opt/homebrew/opt/libomp/lib
 
-macx: {
-QMAKE_LFLAGS += -lomp
-}
-
-macx: {
-LIBS += -L /usr/local/lib /usr/local/lib/libomp.dylib
-ICON = imgs/texassolver_logo.icns
+    ICON = imgs/texassolver_logo.icns
+    QMAKE_MACOSX_DEPLOYMENT_TARGET = 11.0
 }
 
 win32: {
@@ -57,7 +50,7 @@ QMAKE_LFLAGS += -fopenmp
 }
 
 QMAKE_CXXFLAGS_RELEASE -= -O2
-QMAKE_CXXFLAGS_RELEASE *= -O3 -march=native
+QMAKE_CXXFLAGS_RELEASE *= -O3 -march=native -ffast-math
 
 CONFIG(enable_lto, enable_lto|disable_lto) {
     QMAKE_CXXFLAGS_RELEASE += -flto
@@ -73,8 +66,6 @@ CONFIG(pgo_use, pgo_generate|pgo_use) {
     QMAKE_CXXFLAGS_RELEASE += -fprofile-use -fprofile-correction
     QMAKE_LFLAGS_RELEASE += -fprofile-use -fprofile-correction
 }
-QMAKE_LFLAGS += -v
-
 win32: CONFIG(release, debug|release) {
     QMAKE_POST_LINK += $$quote($$shell_path($$PWD/deploy_assets.bat) $$shell_path(release/TexasSolverGui.exe))
 }
@@ -84,7 +75,6 @@ SOURCES += \
     mainwindow.cpp \
     src/Deck.cpp \
     src/Card.cpp \
-    src/console.cpp \
     src/GameTree.cpp \
     src/library.cpp \
     src/compairer/Dic5Compairer.cpp \

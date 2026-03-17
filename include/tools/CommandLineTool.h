@@ -33,15 +33,15 @@ private:
     int raise_limit=4;
     int thread_number=1;
     float small_blind=0.5;
-    float big_blind=1;
-    float stack=20 + 5;
+    float big_blind=1.0;
+    float stack=25;
     float allin_threshold = 0.67;
     string range_ip;
     string range_oop;
     string board;
     float accuracy;
     int max_iteration=100;
-    int use_isomorphism=0;
+    int use_isomorphism=1;
     int use_halffloats=0;
     int task_parallelism=1;
     int regret_pruning=1;

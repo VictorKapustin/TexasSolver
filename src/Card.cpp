@@ -182,6 +182,7 @@ string Card::rankToString(int rank)
 
 int Card::rankToInt(char rank)
 {
+    if (rank >= 'a' && rank <= 'z') rank -= ('a' - 'A');
     switch(rank)
     {
         case '2': return 2;
@@ -203,13 +204,14 @@ int Card::rankToInt(char rank)
 
 int Card::suitToInt(char suit)
 {
+    if (suit >= 'A' && suit <= 'Z') suit += ('a' - 'A');
     switch(suit)
     {
         case 'c': return 0; // 梅花
         case 'd': return 1; // 方块
         case 'h': return 2; // 红桃
         case 's': return 3; // 黑桃
-        default: return 0;
+        default: throw runtime_error(tfm::format("suit %c not found", suit));
     }
 }
 

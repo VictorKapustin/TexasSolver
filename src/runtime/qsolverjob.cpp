@@ -1,4 +1,4 @@
-﻿#include "include/runtime/qsolverjob.h"
+#include "include/runtime/qsolverjob.h"
 
 
 using namespace std;
@@ -112,7 +112,11 @@ void QSolverJob::solving(){
             this->accuracy,
             this->use_isomorphism,
             this->use_halffloats,
-            this->thread_number
+            this->thread_number,
+            false,
+            this->task_parallelism,
+            this->regret_pruning,
+            this->strategy_freeze_threshold
         );
     }else if(this->mode == Mode::SHORTDECK){
         this->ps_shortdeck.train(
@@ -127,7 +131,11 @@ void QSolverJob::solving(){
             this->accuracy,
             this->use_isomorphism,
             this->use_halffloats,
-            this->thread_number
+            this->thread_number,
+            false,
+            this->task_parallelism,
+            this->regret_pruning,
+            this->strategy_freeze_threshold
         );
     }
     qDebug().noquote() << tr("Solving done.");//.toStdString() << std::endl;

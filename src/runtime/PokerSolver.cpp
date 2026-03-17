@@ -1,4 +1,4 @@
-﻿//
+//
 // Created by Xuefeng Huang on 2020/2/6.
 //
 
@@ -31,6 +31,16 @@ void PokerSolver::build_game_tree(
         GameTreeBuildingSettings buildingSettings,
         float allin_threshold
 ){
+    qDebug().noquote() << "BUILD TREE PARAMS:";
+    qDebug().noquote() << "oop_commit:" << oop_commit;
+    qDebug().noquote() << "ip_commit:" << ip_commit;
+    qDebug().noquote() << "current_round:" << current_round;
+    qDebug().noquote() << "raise_limit:" << raise_limit;
+    qDebug().noquote() << "small_blind:" << small_blind;
+    qDebug().noquote() << "big_blind:" << big_blind;
+    qDebug().noquote() << "stack:" << stack;
+    qDebug().noquote() << "allin_threshold:" << allin_threshold;
+
     shared_ptr<GameTree> game_tree = make_shared<GameTree>(
             this->deck,
             oop_commit,

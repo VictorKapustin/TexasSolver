@@ -23,9 +23,14 @@ macx: {
     QMAKE_MACOSX_DEPLOYMENT_TARGET = 11.0
 }
 
+linux: {
+    QMAKE_CXXFLAGS += -fopenmp
+    QMAKE_LFLAGS += -fopenmp
+}
+
 # Optimization flags from optimized GUI build
 QMAKE_CXXFLAGS_RELEASE -= -O2
-QMAKE_CXXFLAGS_RELEASE *= -O3 -march=native
+QMAKE_CXXFLAGS_RELEASE *= -O3 -march=native -ffast-math
 
 CONFIG(enable_lto, enable_lto|disable_lto) {
     QMAKE_CXXFLAGS_RELEASE += -flto

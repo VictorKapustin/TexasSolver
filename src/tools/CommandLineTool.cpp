@@ -1,4 +1,4 @@
-﻿//
+//
 // Created by bytedance on 7.6.21.
 //
 #include "include/tools/CommandLineTool.h"
@@ -26,13 +26,13 @@ CommandLineTool::CommandLineTool(string mode,string resource_dir) {
     string logfile_name = "../resources/outputs/outputs_log.txt";
     this->ps = PokerSolver(ranks,suits,compairer_file,lines,compairer_file_bin);
 
-    StreetSetting gbs_flop_ip = StreetSetting(vector<float>{},vector<float>{},vector<float>{},true);
-    StreetSetting gbs_turn_ip = StreetSetting(vector<float>{},vector<float>{},vector<float>{},true);
-    StreetSetting gbs_river_ip = StreetSetting(vector<float>{},vector<float>{},vector<float>{},true);
+    StreetSetting gbs_flop_ip = StreetSetting(vector<float>{},vector<float>{},vector<float>{},false);
+    StreetSetting gbs_turn_ip = StreetSetting(vector<float>{},vector<float>{},vector<float>{},false);
+    StreetSetting gbs_river_ip = StreetSetting(vector<float>{},vector<float>{},vector<float>{},false);
 
-    StreetSetting gbs_flop_oop = StreetSetting(vector<float>{},vector<float>{},vector<float>{},true);
-    StreetSetting gbs_turn_oop = StreetSetting(vector<float>{},vector<float>{},vector<float>{},true);
-    StreetSetting gbs_river_oop = StreetSetting(vector<float>{},vector<float>{},vector<float>{},true);
+    StreetSetting gbs_flop_oop = StreetSetting(vector<float>{},vector<float>{},vector<float>{},false);
+    StreetSetting gbs_turn_oop = StreetSetting(vector<float>{},vector<float>{},vector<float>{},false);
+    StreetSetting gbs_river_oop = StreetSetting(vector<float>{},vector<float>{},vector<float>{},false);
 
     this->gtbs = make_shared<GameTreeBuildingSettings>(gbs_flop_ip,gbs_turn_ip,gbs_river_ip,gbs_flop_oop,gbs_turn_oop,gbs_river_oop);
     //ps.build_game_tree(oop_commit,ip_commit,current_round,raise_limit,small_blind,big_blind,stack,*gtbs.get(),allin_threshold);
@@ -157,6 +157,7 @@ void CommandLineTool::processCommand(string input) {
         if(bet_type == "bet" || bet_type == "raise" || bet_type == "donk"){
             sizes->clear();
             for(std::size_t i = 3;i < params.size();i ++ ){
+                if (params[i].empty()) continue;
                 sizes->push_back(stof(params[i]));
             }
         }
@@ -164,6 +165,12 @@ void CommandLineTool::processCommand(string input) {
         this->accuracy = stof(paramstr);
     }else if(command == "set_allin_threshold"){
         this->allin_threshold = stof(paramstr);
+    }else if(command == "set_small_blind"){
+        this->small_blind = stof(paramstr);
+    }else if(command == "set_big_blind"){
+        this->big_blind = stof(paramstr);
+    }else if(command == "set_raise_limit"){
+        this->raise_limit = stoi(paramstr);
     }else if(command == "set_thread_num"){
         this->thread_number = stoi(paramstr);
     }else if(command == "set_profile_mode"){

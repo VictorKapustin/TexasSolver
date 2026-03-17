@@ -434,7 +434,8 @@ void MainWindow::on_clearLogButtom_clicked()
 }
 
 vector<float> sizes_convert(QString input){
-    QStringList list = input.split(" ");
+    if(input.trimmed().isEmpty()) return vector<float>{};
+    QStringList list = input.split(" ", Qt::SkipEmptyParts);
     vector<float> sizes;
     foreach(QString num, list){
         if(num.endsWith("x")){
