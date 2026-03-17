@@ -44,6 +44,8 @@ private:
     int use_isomorphism=0;
     int use_halffloats=0;
     int task_parallelism=1;
+    int regret_pruning=1;
+    float strategy_freeze_threshold=0.0f;
     int print_interval=10;
     int dump_rounds = 1;
     bool profile_mode = false;

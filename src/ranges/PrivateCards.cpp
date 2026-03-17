@@ -12,13 +12,12 @@ PrivateCards::PrivateCards(int card1, int card2, float weight) {
     this->card2 = card2;
     this->weight = weight;
     this->relative_prob = 0;
-    this->card_vec = vector<int>{this->card1,this->card2};
     if (card1 > card2){
         this->hash_code = card1 * 52 + card2;
     }else{
         this->hash_code = card2 * 52 + card1;
     }
-    this->board_long = Card::boardInts2long(this->card_vec);
+    this->board_long = Card::boardInt2long(card1) | Card::boardInt2long(card2);
 }
 
 uint64_t PrivateCards::toBoardLong() const {
@@ -39,6 +38,3 @@ string PrivateCards::toString() {
     }
 }
 
-const vector<int> & PrivateCards::get_hands() const {
-    return this->card_vec;
-}

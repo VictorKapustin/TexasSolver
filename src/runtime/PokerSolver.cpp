@@ -53,7 +53,7 @@ vector<PrivateCards> noDuplicateRange(const vector<PrivateCards> &private_range,
         if(rangekv.find(one_range.hashCode()) != rangekv.end())
             throw runtime_error(tfm::format("duplicated key %s",one_range.toString()));
         rangekv[one_range.hashCode()] = true;
-        uint64_t hand_long = Card::boardInts2long(one_range.get_hands());
+        uint64_t hand_long = one_range.toBoardLong();
         if(!Card::boardsHasIntercept(hand_long,board_long)){
             range_array.push_back(one_range);
         }
@@ -95,7 +95,8 @@ long long PokerSolver::estimate_tree_memory(QString range1,QString range2,QStrin
 
 void PokerSolver::train(string p1_range, string p2_range, string boards, string log_file, int iteration_number,
                         int print_interval, string algorithm,int warmup,float accuracy,bool use_isomorphism,
-                        int use_halffloats, int threads, bool profile_enabled, bool task_parallelism) {
+                        int use_halffloats, int threads, bool profile_enabled, bool task_parallelism,
+                        bool regret_pruning, float strategy_freeze_threshold) {
     string player1RangeStr = p1_range;
     string player2RangeStr = p2_range;
 
@@ -133,6 +134,8 @@ void PokerSolver::train(string p1_range, string p2_range, string boards, string 
             , threads
             , profile_enabled
             , task_parallelism
+            , regret_pruning
+            , strategy_freeze_threshold
     );
     this->solver->train();
 }

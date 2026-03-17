@@ -25,6 +25,8 @@ private:
     // Caches 1 / sum(max(r_plus, 0)) for the current regret state.
     vector<float> r_plus_sum;
     vector<float> cum_r_plus;
+    bool cum_frozen_ = false;
+    int  frozen_skip_count_ = 0;
     //vector<float> cum_r_plus_sum;
     //vector<float> current_strategy;
     //vector<float> average_strategy;
@@ -48,6 +50,9 @@ public:
     json dump_strategy(bool with_state) override;
 
     json dump_evs() override;
+
+    bool isActionPrunable(int action_id) override;
+    bool isCumFrozen() const override { return cum_frozen_; }
 
 private:
 

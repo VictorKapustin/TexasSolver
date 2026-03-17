@@ -50,7 +50,7 @@ vector<float> PrivateCardsManager::getInitialReachProb(int player, uint64_t init
     vector<float> probs = vector<float>(cards_len);
     for(int i = 0;i < cards_len;i ++){
         PrivateCards pc = this->private_cards[player][i];
-        if(Card::boardsHasIntercept(initialboard,Card::boardInts2long(pc.get_hands()))) {
+        if(Card::boardsHasIntercept(initialboard, pc.toBoardLong())) {
             probs[i] = 0;
         }else{
             probs[i] = this->private_cards[player][i].weight;
@@ -69,7 +69,7 @@ void PrivateCardsManager::setRelativeProbs() {
         for(std::size_t i = 0;i < this->private_cards[player_id].size();i ++) {
             float oppo_prob_sum = 0;
             PrivateCards* player_card = &this->private_cards[player_id][i];
-            uint64_t player_long = Card::boardInts2long(player_card->get_hands());
+            uint64_t player_long = player_card->toBoardLong();
 
             //
             if (Card::boardsHasIntercept(player_long,this->initialboard)){
@@ -77,7 +77,7 @@ void PrivateCardsManager::setRelativeProbs() {
             }
 
             for (auto oppo_card : this->private_cards[oppo]) {
-                uint64_t oppo_long = Card::boardInts2long(oppo_card.get_hands());
+                uint64_t oppo_long = oppo_card.toBoardLong();
                 if (Card::boardsHasIntercept(oppo_long,this->initialboard)
                     || Card::boardsHasIntercept(oppo_long,player_long)
                         ){

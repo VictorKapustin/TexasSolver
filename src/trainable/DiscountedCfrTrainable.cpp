@@ -176,20 +176,51 @@ void DiscountedCfrTrainable::updateRegretsInPlace(const float* regrets, int iter
         }
     }
 
-    const float uniform_strategy = 1.0f / this->action_number;
-    float strategy_coef = pow(((float)iteration_number / (iteration_number + 1)), gamma);
-    for (int action_id = 0; action_id < action_number; action_id++) {
-        for (int private_id = 0; private_id < this->card_number; private_id++) {
-            int index = action_id * this->card_number + private_id;
-            float inv_r_plus_sum = this->r_plus_sum[private_id];
-            float strat;
-            if (inv_r_plus_sum != 0.0f) {
-                strat = max(0.0f, this->r_plus[index]) * inv_r_plus_sum;
-            } else {
-                strat = uniform_strategy;
+    // Strategy freeze: skip cum_r_plus accumulator update for converged trainables.
+    // Every 50 skipped iterations we force a recheck so freezing self-corrects.
+    bool do_cum_update;
+    if (!cum_frozen_) {
+        do_cum_update = true;
+    } else {
+        frozen_skip_count_++;
+        do_cum_update = (frozen_skip_count_ >= 50);
+        if (do_cum_update) frozen_skip_count_ = 0;
+    }
+
+    if (do_cum_update) {
+        const float uniform_strategy = 1.0f / this->action_number;
+        float strategy_coef = pow(((float)iteration_number / (iteration_number + 1)), gamma);
+        const float freeze_thr = Trainable::s_freeze_threshold;
+        if (freeze_thr > 0.0f) {
+            float max_delta = 0.0f;
+            for (int action_id = 0; action_id < action_number; action_id++) {
+                for (int private_id = 0; private_id < this->card_number; private_id++) {
+                    int index = action_id * this->card_number + private_id;
+                    float inv_r_plus_sum = this->r_plus_sum[private_id];
+                    float strat = (inv_r_plus_sum != 0.0f)
+                        ? max(0.0f, this->r_plus[index]) * inv_r_plus_sum
+                        : uniform_strategy;
+                    float old_val = this->cum_r_plus[index];
+                    float new_val = old_val * this->theta + strat * strategy_coef;
+                    float d = new_val - old_val; if (d < 0) d = -d;
+                    if (d > max_delta) max_delta = d;
+                    this->cum_r_plus[index] = new_val;
+                }
             }
-            this->cum_r_plus[index] *= this->theta;
-            this->cum_r_plus[index] += strat * strategy_coef;
+            cum_frozen_ = (max_delta < freeze_thr);
+            if (cum_frozen_) frozen_skip_count_ = 0;
+        } else {
+            for (int action_id = 0; action_id < action_number; action_id++) {
+                for (int private_id = 0; private_id < this->card_number; private_id++) {
+                    int index = action_id * this->card_number + private_id;
+                    float inv_r_plus_sum = this->r_plus_sum[private_id];
+                    float strat = (inv_r_plus_sum != 0.0f)
+                        ? max(0.0f, this->r_plus[index]) * inv_r_plus_sum
+                        : uniform_strategy;
+                    this->cum_r_plus[index] *= this->theta;
+                    this->cum_r_plus[index] += strat * strategy_coef;
+                }
+            }
         }
     }
 }
@@ -250,6 +281,14 @@ json DiscountedCfrTrainable::dump_evs() {
     retjson["actions"] = std::move(actions_str);
     retjson["evs"] = std::move(evs);
     return std::move(retjson);
+}
+
+bool DiscountedCfrTrainable::isActionPrunable(int action_id) {
+    const int offset = action_id * this->card_number;
+    for (int i = 0; i < this->card_number; i++) {
+        if (this->r_plus[offset + i] > 0.0f) return false;
+    }
+    return true;
 }
 
 Trainable::TrainableType DiscountedCfrTrainable::get_type() {

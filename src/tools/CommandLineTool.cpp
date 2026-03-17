@@ -188,6 +188,16 @@ void CommandLineTool::processCommand(string input) {
         if(this->task_parallelism != 0 && this->task_parallelism != 1) {
             throw runtime_error(tfm::format("task_parallelism must be 0 or 1: %s", paramstr));
         }
+    }else if(command == "set_regret_pruning"){
+        this->regret_pruning = stoi(paramstr);
+        if(this->regret_pruning != 0 && this->regret_pruning != 1) {
+            throw runtime_error(tfm::format("regret_pruning must be 0 or 1: %s", paramstr));
+        }
+    }else if(command == "set_strategy_freeze_threshold"){
+        this->strategy_freeze_threshold = stof(paramstr);
+        if(this->strategy_freeze_threshold < 0.0f) {
+            throw runtime_error(tfm::format("strategy_freeze_threshold must be >= 0: %s", paramstr));
+        }
     }else if(command == "set_print_interval"){
         this->print_interval = stoi(paramstr);
     }else if(command == "start_solve"){
@@ -203,6 +213,8 @@ void CommandLineTool::processCommand(string input) {
             benchmark_setup["use_isomorphism"] = this->use_isomorphism;
             benchmark_setup["use_halffloats"] = this->use_halffloats;
             benchmark_setup["task_parallelism"] = this->task_parallelism;
+            benchmark_setup["regret_pruning"] = this->regret_pruning;
+            benchmark_setup["strategy_freeze_threshold"] = this->strategy_freeze_threshold;
             benchmark_setup["build_tree_ms"] = this->last_build_tree_ms;
             benchmark_setup["range_ip"] = this->range_ip;
             benchmark_setup["range_oop"] = this->range_oop;
@@ -223,7 +235,9 @@ void CommandLineTool::processCommand(string input) {
                 this->use_halffloats,
                 this->thread_number,
                 this->profile_mode,
-                this->task_parallelism != 0
+                this->task_parallelism != 0,
+                this->regret_pruning != 0,
+                this->strategy_freeze_threshold
         );
         if(this->profile_mode){
             json solve_done;

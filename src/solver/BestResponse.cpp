@@ -356,7 +356,7 @@ BestResponse::terminalBestReponse(shared_ptr<TerminalNode> node, int player, con
     const vector<float>& oppo_reach_prob = reach_probs[1 - player];
     for(std::size_t oppo_hand = 0;oppo_hand < oppo_combs.size(); oppo_hand ++){
         const RiverCombs& one_hc = oppo_combs[oppo_hand];
-        uint64_t one_hc_long  = Card::boardInts2long(one_hc.private_cards.get_hands());
+        uint64_t one_hc_long  = one_hc.private_cards.toBoardLong();
 
         // 如果对手手牌和public card有重叠，那么这组牌不可能存在
         if(Card::boardsHasIntercept(one_hc_long,board_long)){
@@ -371,7 +371,7 @@ BestResponse::terminalBestReponse(shared_ptr<TerminalNode> node, int player, con
 
     for(std::size_t player_hand = 0;player_hand < player_combs.size();player_hand ++) {
         const RiverCombs& player_hc = player_combs[player_hand];
-        uint64_t player_hc_long = Card::boardInts2long(player_hc.private_cards.get_hands());
+        uint64_t player_hc_long = player_hc.private_cards.toBoardLong();
         if(Card::boardsHasIntercept(player_hc_long,board_long)){
             payoffs[player_hand] = 0;
         }else{

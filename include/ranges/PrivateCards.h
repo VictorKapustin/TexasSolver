@@ -17,9 +17,7 @@ public:
     uint64_t toBoardLong() const;
     int hashCode() const;
     string toString();
-    const vector<int> & get_hands() const;
 private:
-    vector<int> card_vec;
     int hash_code{};
     uint64_t board_long;
 };

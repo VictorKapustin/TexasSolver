@@ -32,6 +32,8 @@ private:
     vector<CumRplusStorage> cum_r_plus;
     // Caches 1 / sum(max(r_plus, 0)) for the current regret state.
     vector<float> r_plus_sum;
+    bool cum_frozen_ = false;
+    int  frozen_skip_count_ = 0;
 public:
     DiscountedCfrTrainableHF(vector<PrivateCards> *privateCards,
                            ActionNode &actionNode);
@@ -52,6 +54,9 @@ public:
     json dump_strategy(bool with_state) override;
 
     json dump_evs() override;
+
+    bool isActionPrunable(int action_id) override;
+    bool isCumFrozen() const override { return cum_frozen_; }
 
 private:
 

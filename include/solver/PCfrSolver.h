@@ -28,6 +28,7 @@ using nlohmann::json;
 class GameTree;
 class GameTreeNode;
 class ActionNode;
+class ChanceNode;
 class TerminalNode;
 class ShowdownNode;
 class Card;
@@ -49,6 +50,8 @@ public:
         uint64_t allocator_ns = 0;
         uint64_t allocator_calls = 0;
         uint64_t allocator_bytes = 0;
+        uint64_t pruned_branches = 0;
+        uint64_t frozen_cum_updates = 0;
     };
 
     struct ThreadScratchBuffer {
@@ -196,7 +199,9 @@ public:
             int use_halffloats,
             int num_threads,
             bool profile_enabled = false,
-            bool task_parallelism = false
+            bool task_parallelism = false,
+            bool regret_pruning = true,
+            float strategy_freeze_threshold = 0.0f
     );
     ~PCfrSolver();
     void train() override;
@@ -223,6 +228,8 @@ private:
     int use_halffloats;
     int num_threads;
     bool task_parallelism = false;
+    bool regret_pruning = true;
+    float strategy_freeze_threshold_ = 0.0f;
     bool distributing_task = false;
     bool collecting_statics = false;
 
@@ -246,22 +253,22 @@ private:
     std::vector<BenchmarkThreadStats> benchmark_thread_stats;
     std::vector<std::shared_ptr<ThreadScratchBuffer>> thread_scratch_buffers;
 
-    void setTrainable(std::shared_ptr<GameTreeNode> root);
+    void setTrainable(GameTreeNode* root);
     std::vector<int> getAllAbstractionDeal(int deal);
-    
-    void cfr(int player, std::shared_ptr<GameTreeNode> node, const float* reach_probs, int iter,
+
+    void cfr(int player, GameTreeNode* node, const float* reach_probs, int iter,
             uint64_t current_board, int deal, float* result);
 
-    void chanceUtility(int player, std::shared_ptr<ChanceNode> node, const float* reach_probs, int iter,
+    void chanceUtility(int player, ChanceNode* node, const float* reach_probs, int iter,
                      uint64_t current_board, int deal, float* result);
 
-    void actionUtility(int player, std::shared_ptr<ActionNode> node, const float* reach_probs, int iter,
+    void actionUtility(int player, ActionNode* node, const float* reach_probs, int iter,
                      uint64_t current_board, int deal, float* result);
 
-    void showdownUtility(int player, std::shared_ptr<ShowdownNode> node, const float* reach_probs,
+    void showdownUtility(int player, ShowdownNode* node, const float* reach_probs,
                        int iter, uint64_t current_board, int deal, float* result);
 
-    void terminalUtility(int player, std::shared_ptr<TerminalNode> node, const float* reach_probs,
+    void terminalUtility(int player, TerminalNode* node, const float* reach_probs,
                        int iter, uint64_t current_board, int deal, float* result);
 
     void findGameSpecificIsomorphisms();

@@ -35,7 +35,7 @@ PCfrSolver::PCfrSolver(shared_ptr<GameTree> tree, vector<PrivateCards> range1, v
                      vector<int> initial_board, shared_ptr<Compairer> compairer, Deck deck, int iteration_number, bool debug,
                      int print_interval, string logfile, string trainer, Solver::MonteCarolAlg monteCarolAlg,int warmup,
                      float accuracy,bool use_isomorphism,int use_halffloats,int num_threads,bool profile_enabled,
-                     bool task_parallelism)
+                     bool task_parallelism,bool regret_pruning,float strategy_freeze_threshold)
                      :Solver(tree), rrm(compairer){
     this->initial_board = initial_board;
     this->initial_board_long = Card::boardInts2long(initial_board);
@@ -71,6 +71,8 @@ PCfrSolver::PCfrSolver(shared_ptr<GameTree> tree, vector<PrivateCards> range1, v
     this->accuracy = accuracy;
     this->profile_enabled = profile_enabled;
     this->task_parallelism = task_parallelism;
+    this->regret_pruning = regret_pruning;
+    this->strategy_freeze_threshold_ = strategy_freeze_threshold;
     if(num_threads == -1){
         num_threads = omp_get_num_procs();
     }
@@ -84,7 +86,7 @@ PCfrSolver::PCfrSolver(shared_ptr<GameTree> tree, vector<PrivateCards> range1, v
         this->thread_scratch_buffers[i] = std::make_shared<ThreadScratchBuffer>();
     }
 
-    setTrainable(this->tree->getRoot());
+    setTrainable(this->tree->getRoot().get());
     this->root_round = this->tree->getRoot()->getRound();
     if(this->root_round == GameTreeNode::GameRound::PREFLOP){
         this->split_round = GameTreeNode::GameRound::FLOP;
@@ -136,6 +138,8 @@ json PCfrSolver::collectBenchmarkStatsJson() const {
         total.allocator_ns += one_stats.allocator_ns;
         total.allocator_calls += one_stats.allocator_calls;
         total.allocator_bytes += one_stats.allocator_bytes;
+        total.pruned_branches += one_stats.pruned_branches;
+        total.frozen_cum_updates += one_stats.frozen_cum_updates;
     }
     for(const std::shared_ptr<ThreadScratchBuffer>& scratch : this->thread_scratch_buffers) {
         total.allocator_ns += scratch->allocator_ns;
@@ -165,6 +169,10 @@ json PCfrSolver::collectBenchmarkStatsJson() const {
             {"showdown_eval", nsToMs(total.showdown_ns)},
             {"terminal_eval", nsToMs(total.terminal_ns)},
             {"allocator", nsToMs(total.allocator_ns)}
+    };
+    retval["pruning"] = {
+            {"pruned_branches", total.pruned_branches},
+            {"frozen_cum_updates", total.frozen_cum_updates}
     };
     retval["allocator_profile"] = {
             {"calls", total.allocator_calls},
@@ -246,7 +254,7 @@ PCfrSolver::noDuplicateRange(const vector<PrivateCards> &private_range, uint64_t
         if(rangekv.find(one_range.hashCode()) != rangekv.end())
             throw runtime_error(tfm::format("duplicated key %s",one_range.toString()));
         rangekv[one_range.hashCode()] = true;
-        uint64_t hand_long = Card::boardInts2long(one_range.get_hands());
+        uint64_t hand_long = one_range.toBoardLong();
         if(!Card::boardsHasIntercept(hand_long,board_long)){
             range_array.push_back(one_range);
         }
@@ -255,9 +263,9 @@ PCfrSolver::noDuplicateRange(const vector<PrivateCards> &private_range, uint64_t
 
 }
 
-void PCfrSolver::setTrainable(shared_ptr<GameTreeNode> root) {
+void PCfrSolver::setTrainable(GameTreeNode* root) {
     if(root->getType() == GameTreeNode::ACTION){
-        shared_ptr<ActionNode> action_node = std::dynamic_pointer_cast<ActionNode>(root);
+        ActionNode* action_node = static_cast<ActionNode*>(root);
 
         int player = action_node->getPlayer();
 
@@ -289,12 +297,11 @@ void PCfrSolver::setTrainable(shared_ptr<GameTreeNode> root) {
             throw runtime_error(tfm::format("trainer %s not found",this->trainer));
         }
 
-        vector<shared_ptr<GameTreeNode>> childrens =  action_node->getChildrens();
-        for(shared_ptr<GameTreeNode> one_child:childrens) setTrainable(one_child);
+        vector<shared_ptr<GameTreeNode>>& childrens = action_node->getChildrens();
+        for(auto& one_child : childrens) setTrainable(one_child.get());
     }else if(root->getType() == GameTreeNode::CHANCE) {
-        shared_ptr<ChanceNode> chance_node = std::dynamic_pointer_cast<ChanceNode>(root);
-        shared_ptr<GameTreeNode> children = chance_node->getChildren();
-        setTrainable(children);
+        ChanceNode* chance_node = static_cast<ChanceNode*>(root);
+        setTrainable(chance_node->getChildren().get());
     }
     else if(root->getType() == GameTreeNode::TERMINAL){
 
@@ -349,31 +356,27 @@ vector<int> PCfrSolver::getAllAbstractionDeal(int deal){
     return all_deal;
 }
 
-void PCfrSolver::cfr(int player, shared_ptr<GameTreeNode> node, const float* reach_probs, int iter,
+void PCfrSolver::cfr(int player, GameTreeNode* node, const float* reach_probs, int iter,
                     uint64_t current_board, int deal, float* result) {
     switch(node->getType()) {
-        case GameTreeNode::ACTION: {
-            shared_ptr<ActionNode> action_node = std::dynamic_pointer_cast<ActionNode>(node);
-            actionUtility(player, action_node, reach_probs, iter, current_board, deal, result);
+        case GameTreeNode::ACTION:
+            actionUtility(player, static_cast<ActionNode*>(node), reach_probs, iter, current_board, deal, result);
             break;
-        } case GameTreeNode::SHOWDOWN: {
-            shared_ptr<ShowdownNode> showdown_node = std::dynamic_pointer_cast<ShowdownNode>(node);
-            showdownUtility(player, showdown_node, reach_probs, iter, current_board, deal, result);
+        case GameTreeNode::SHOWDOWN:
+            showdownUtility(player, static_cast<ShowdownNode*>(node), reach_probs, iter, current_board, deal, result);
             break;
-        } case GameTreeNode::TERMINAL: {
-            shared_ptr<TerminalNode> terminal_node = std::dynamic_pointer_cast<TerminalNode>(node);
-            terminalUtility(player, terminal_node, reach_probs, iter, current_board, deal, result);
+        case GameTreeNode::TERMINAL:
+            terminalUtility(player, static_cast<TerminalNode*>(node), reach_probs, iter, current_board, deal, result);
             break;
-        } case GameTreeNode::CHANCE: {
-            shared_ptr<ChanceNode> chance_node = std::dynamic_pointer_cast<ChanceNode>(node);
-            chanceUtility(player, chance_node, reach_probs, iter, current_board, deal, result);
+        case GameTreeNode::CHANCE:
+            chanceUtility(player, static_cast<ChanceNode*>(node), reach_probs, iter, current_board, deal, result);
             break;
-        } default:
+        default:
             throw runtime_error("node type unknown");
     }
 }
 
-void PCfrSolver::chanceUtility(int player, shared_ptr<ChanceNode> node, const float* reach_probs, int iter,
+void PCfrSolver::chanceUtility(int player, ChanceNode* node, const float* reach_probs, int iter,
                           uint64_t current_board, int deal, float* result) {
     BenchmarkThreadStats* benchmark_stats = this->profile_enabled ? &this->currentBenchmarkThreadStats() : nullptr;
     if(benchmark_stats != nullptr){
@@ -440,7 +443,7 @@ void PCfrSolver::chanceUtility(int player, shared_ptr<ChanceNode> node, const fl
     auto evaluate_valid_card = [&](std::size_t valid_ind) {
         ThreadScratchBuffer& scratch = this->currentThreadScratchBuffer();
         int card = valid_cards[valid_ind];
-        shared_ptr<GameTreeNode> one_child = node->getChildren();
+        GameTreeNode* one_child = node->getChildren().get();
         Card *one_card = const_cast<Card *>(&(node->getCards()[card]));
         uint64_t card_long = Card::boardInt2long(one_card->getCardInt());
         uint64_t new_board_long = current_board | card_long;
@@ -534,7 +537,7 @@ void PCfrSolver::chanceUtility(int player, shared_ptr<ChanceNode> node, const fl
     main_scratch.pop_floats(52 * my_range_size);
 }
 
-void PCfrSolver::actionUtility(int player, shared_ptr<ActionNode> node, const float* reach_probs, int iter,
+void PCfrSolver::actionUtility(int player, ActionNode* node, const float* reach_probs, int iter,
                           uint64_t current_board, int deal, float* result) {
     BenchmarkThreadStats* benchmark_stats = this->profile_enabled ? &this->currentBenchmarkThreadStats() : nullptr;
     if(benchmark_stats != nullptr) benchmark_stats->action_nodes += 1;
@@ -569,6 +572,30 @@ void PCfrSolver::actionUtility(int player, shared_ptr<ActionNode> node, const fl
     trainable->getcurrentStrategyInPlace(current_strategy);
     if(benchmark_stats != nullptr) benchmark_stats->strategy_fetch_ns += (this->profile_enabled ? steadyNowNs() - strategy_fetch_start : 0);
 
+    // Regret-based pruning: skip actions where all r_plus <= 0 for traversing player.
+    // Every 10th iteration is a full (unpruned) pass so pruned actions can recover.
+    bool action_pruned[64] = {};
+    int pruned_count = 0;
+    const bool can_prune = this->regret_pruning
+            && (player == node->getPlayer())
+            && (iter > this->warmup)
+            && (action_count > 1)
+            && (iter % 10 != 0);
+    if (can_prune) {
+        for (int a = 0; a < action_count; a++) {
+            if (trainable->isActionPrunable(a)) {
+                action_pruned[a] = true;
+                pruned_count++;
+            }
+        }
+        // Never prune all actions
+        if (pruned_count >= action_count) {
+            std::fill(action_pruned, action_pruned + action_count, false);
+            pruned_count = 0;
+        }
+    }
+    if (benchmark_stats != nullptr) benchmark_stats->pruned_branches += pruned_count;
+
     auto evaluate_action_branch = [&](int action_id, float* branch_utility) {
         if (node->getPlayer() != player) {
             // Oppo is making a decision, update their reach probs passing down
@@ -578,11 +605,11 @@ void PCfrSolver::actionUtility(int player, shared_ptr<ActionNode> node, const fl
                 float strategy_prob = current_strategy[hand_id + action_id * node_player_size];
                 new_reach_probs[hand_id] = reach_probs[hand_id] * strategy_prob;
             }
-            this->cfr(player, children[action_id], new_reach_probs, iter, current_board, deal, branch_utility);
+            this->cfr(player, children[action_id].get(), new_reach_probs, iter, current_board, deal, branch_utility);
             branch_scratch.pop_floats(node_player_size);
         } else {
             // I am making the decision, reach probs don't change for child calls
-            this->cfr(player, children[action_id], reach_probs, iter, current_board, deal, branch_utility);
+            this->cfr(player, children[action_id].get(), reach_probs, iter, current_board, deal, branch_utility);
         }
     };
 
@@ -590,6 +617,11 @@ void PCfrSolver::actionUtility(int player, shared_ptr<ActionNode> node, const fl
         #pragma omp taskgroup
         {
             for (int action_id = 0; action_id < action_count; action_id++) {
+                if (action_pruned[action_id]) {
+                    std::fill(all_action_utilities + action_id * my_range_size,
+                              all_action_utilities + (action_id + 1) * my_range_size, 0.0f);
+                    continue;
+                }
                 #pragma omp task firstprivate(action_id)
                 {
                     float* branch_utility = all_action_utilities + action_id * my_range_size;
@@ -599,6 +631,11 @@ void PCfrSolver::actionUtility(int player, shared_ptr<ActionNode> node, const fl
         }
     } else {
         for (int action_id = 0; action_id < action_count; action_id++) {
+            if (action_pruned[action_id]) {
+                std::fill(all_action_utilities + action_id * my_range_size,
+                          all_action_utilities + (action_id + 1) * my_range_size, 0.0f);
+                continue;
+            }
             evaluate_action_branch(action_id, child_utility);
             std::copy(child_utility, child_utility + my_range_size, all_action_utilities + action_id * my_range_size);
         }
@@ -619,7 +656,11 @@ void PCfrSolver::actionUtility(int player, shared_ptr<ActionNode> node, const fl
     if (player == node->getPlayer()) {
         for (int i = 0; i < my_range_size; i++) {
             for (int action_id = 0; action_id < action_count; action_id++) {
-                regrets[action_id * my_range_size + i] = all_action_utilities[action_id * my_range_size + i] - result[i];
+                if (action_pruned[action_id]) {
+                    regrets[action_id * my_range_size + i] = 0.0f;
+                } else {
+                    regrets[action_id * my_range_size + i] = all_action_utilities[action_id * my_range_size + i] - result[i];
+                }
             }
         }
 
@@ -642,6 +683,8 @@ void PCfrSolver::actionUtility(int player, shared_ptr<ActionNode> node, const fl
             }
             if((iter >= this->warmup) && benchmark_stats != nullptr) {
                 benchmark_stats->regret_update_ns += (this->profile_enabled ? steadyNowNs() - regret_update_start : 0);
+                if (this->profile_enabled && (iter > this->warmup) && trainable->isCumFrozen())
+                    benchmark_stats->frozen_cum_updates++;
             }
         }
 
@@ -695,7 +738,7 @@ void PCfrSolver::actionUtility(int player, shared_ptr<ActionNode> node, const fl
     scratch.pop_floats(action_count * node_player_size);
     scratch.pop_floats(action_count * node_player_size);
 }
-void PCfrSolver::showdownUtility(int player, shared_ptr<ShowdownNode> node, const float* reach_probs,
+void PCfrSolver::showdownUtility(int player, ShowdownNode* node, const float* reach_probs,
                            int iter, uint64_t current_board, int deal, float* result) {
     BenchmarkThreadStats* benchmark_stats = this->profile_enabled ? &this->currentBenchmarkThreadStats() : nullptr;
     uint64_t showdown_start = this->profile_enabled ? steadyNowNs() : 0;
@@ -755,7 +798,7 @@ void PCfrSolver::showdownUtility(int player, shared_ptr<ShowdownNode> node, cons
     if(benchmark_stats != nullptr && this->profile_enabled) benchmark_stats->showdown_ns += steadyNowNs() - showdown_start;
 }
 
-void PCfrSolver::terminalUtility(int player, shared_ptr<TerminalNode> node, const float* reach_probs, int iter,
+void PCfrSolver::terminalUtility(int player, TerminalNode* node, const float* reach_probs, int iter,
                            uint64_t current_board, int deal, float* result) {
     BenchmarkThreadStats* benchmark_stats = this->profile_enabled ? &this->currentBenchmarkThreadStats() : nullptr;
     uint64_t terminal_start = this->profile_enabled ? steadyNowNs() : 0;
@@ -868,6 +911,7 @@ void PCfrSolver::stop() {
 }
 
 void PCfrSolver::train() {
+    Trainable::setGlobalFreezeThreshold(this->strategy_freeze_threshold_);
 
     vector<vector<PrivateCards>> player_privates(this->player_number);
     player_privates[0] = pcm.getPreflopCards(0);
@@ -934,7 +978,7 @@ void PCfrSolver::train() {
             auto run_player_cfr = [&]() {
                 ThreadScratchBuffer& root_scratch = this->currentThreadScratchBuffer();
                 float* root_result = root_scratch.push_floats(this->ranges[player_id].size());
-                cfr(player_id, this->tree->getRoot(), reach_probs[1 - player_id].data(), i, this->initial_board_long, 0, root_result);
+                cfr(player_id, this->tree->getRoot().get(), reach_probs[1 - player_id].data(), i, this->initial_board_long, 0, root_result);
                 root_scratch.pop_floats(this->ranges[player_id].size());
             };
             if(this->canUseTaskParallelism()) {
@@ -948,7 +992,7 @@ void PCfrSolver::train() {
             } else {
                 {
                     float* root_result = this->currentThreadScratchBuffer().push_floats(this->ranges[player_id].size());
-                    cfr(player_id, this->tree->getRoot(), reach_probs[1 - player_id].data(), i, this->initial_board_long, 0, root_result);
+                    cfr(player_id, this->tree->getRoot().get(), reach_probs[1 - player_id].data(), i, this->initial_board_long, 0, root_result);
                     this->currentThreadScratchBuffer().pop_floats(this->ranges[player_id].size());
                 }
             }
@@ -978,6 +1022,7 @@ void PCfrSolver::train() {
                     jo["solver_profile"] = benchmark_json["timings_ms"];
                     jo["node_counts"] = benchmark_json["node_counts"];
                     jo["allocator_profile"] = benchmark_json["allocator_profile"];
+                    jo["pruning"] = benchmark_json["pruning"];
                     jo["river_cache"] = benchmark_json["river_cache"];
                 }
                 fileWriter << jo << endl;
@@ -1000,6 +1045,7 @@ void PCfrSolver::train() {
             iteration_event["solver_profile"] = benchmark_json["timings_ms"];
             iteration_event["node_counts"] = benchmark_json["node_counts"];
             iteration_event["allocator_profile"] = benchmark_json["allocator_profile"];
+            iteration_event["pruning"] = benchmark_json["pruning"];
             iteration_event["river_cache"] = benchmark_json["river_cache"];
             fileWriter << iteration_event << endl;
         }
@@ -1016,7 +1062,7 @@ void PCfrSolver::train() {
             ThreadScratchBuffer& root_scratch = this->currentThreadScratchBuffer();
             float* result = root_scratch.push_floats(this->ranges[player_id].size());
             std::fill(result, result + this->ranges[player_id].size(), 0.0f);
-            cfr(player_id, this->tree->getRoot(), reach_probs[1 - player_id].data(), this->iteration_number, this->initial_board_long,0, result);
+            cfr(player_id, this->tree->getRoot().get(), reach_probs[1 - player_id].data(), this->iteration_number, this->initial_board_long,0, result);
             root_scratch.pop_floats(this->ranges[player_id].size());
         };
         if(this->canUseTaskParallelism()) {
@@ -1030,7 +1076,7 @@ void PCfrSolver::train() {
         } else {
             {
                 vector<float> result(this->ranges[player_id].size(), 0.0f);
-                cfr(player_id, this->tree->getRoot(), reach_probs[1 - player_id].data(), this->iteration_number, this->initial_board_long,0, result.data());
+                cfr(player_id, this->tree->getRoot().get(), reach_probs[1 - player_id].data(), this->iteration_number, this->initial_board_long,0, result.data());
             }
         }
     }
@@ -1046,6 +1092,7 @@ void PCfrSolver::train() {
         final_event["solver_profile"] = benchmark_json["timings_ms"];
         final_event["node_counts"] = benchmark_json["node_counts"];
         final_event["allocator_profile"] = benchmark_json["allocator_profile"];
+        final_event["pruning"] = benchmark_json["pruning"];
         final_event["river_cache"] = benchmark_json["river_cache"];
         fileWriter << final_event << endl;
     }

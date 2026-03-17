@@ -15,6 +15,14 @@ win32: {
     QMAKE_LFLAGS += -fopenmp
 }
 
+macx: {
+    QMAKE_CXXFLAGS += -Xpreprocessor -fopenmp
+    QMAKE_LFLAGS += -lomp
+    INCLUDEPATH += /opt/homebrew/opt/libomp/include
+    LIBS += -L/opt/homebrew/opt/libomp/lib
+    QMAKE_MACOSX_DEPLOYMENT_TARGET = 11.0
+}
+
 # Optimization flags from optimized GUI build
 QMAKE_CXXFLAGS_RELEASE -= -O2
 QMAKE_CXXFLAGS_RELEASE *= -O3 -march=native

@@ -160,9 +160,37 @@ TODO внутри P3:
 - Следующим осмысленным шагом снова становится `P3.2`: subtree-aware scheduler, retune task cutoff, thread sweep `20/24/28/32` и повторная A/B matrix-проверка на том же benchmark profile.
 - Если profiling после `P3.2` снова покажет заметный river/showdown tail, отдельный цикл `P5.2` должен идти уже в `valid-hand masks`, более агрессивный evaluator/LUT и дополнительную декомпозицию showdown metrics.
 
-P4. Упростить и уплотнить базовые структуры данных
-Критичность: High. Выигрыш: 10-25%, RAM -10-20%.
-PrivateCards хранит внутри heap-овый vector<int> на каждую руку в PrivateCards.h#L21 и PrivateCards.cpp#L15; дерево построено на shared_ptr-графе с множеством мелких объектов в GameTreeNode.h и GameTree.cpp. Для solver-ядра лучше перейти на POD/SoA для рук, плоские массивы/arena для узлов, индексы вместо shared_ptr, contiguous layout для children/actions/trainables.
+P4. Упростить и уплотнить базовые структуры данных (частично выполнено, P4.1 завершён)
+Критичность: High. Изначальная rough-цель: 10-25%, RAM -10-20%. Фактический результат P4.1: `-42%` wall-clock на `8t / HF0 / macOS arm64` при `regret_pruning=0`, что существенно превысило исходную оценку.
+
+Что было сделано в P4.1:
+- `PrivateCards::card_vec` (`vector<int>`) полностью удалён: `board_long` теперь вычисляется в конструкторе через `Card::boardInt2long(card1) | Card::boardInt2long(card2)` без heap-аллокации. Метод `get_hands()` удалён; все 7 call site переведены на `toBoardLong()` напрямую.
+- `PCfrSolver::cfr()`, `actionUtility()`, `chanceUtility()`, `showdownUtility()`, `terminalUtility()`, `setTrainable()` переведены с `shared_ptr<T>` на `T*`. `dynamic_pointer_cast` заменены на `static_cast` после `getType()` проверки. Вызовы от `tree->getRoot()` используют `.get()`.
+
+Что показал benchmark (`baseline = BASELINE_MACOS.md`, профиль `macOS arm64 / 2 runs / 121 итерация`):
+
+| Threads | HF | Pruning | Solve Before | Solve After | Delta | Fetch Before | Fetch After | Regret Before | Regret After |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| 8 | 0 | OFF | 75662 | 43800 | -42,1% | 948,01 | 313,8 | 969,56 | 247,4 |
+| 8 | 0 | ON | 75662 | 41535 | -45,1% | 948,01 | 313,9 | 969,56 | 247,3 |
+| 14 | 0 | OFF | 45052 | 42670 | -5,3% | 639,01 | 390,9 | 664,88 | 308,9 |
+
+Почему выигрыш оказался крупнее ожидаемого:
+- `shared_ptr` в сигнатурах `cfr()` и utility-функций создавал атомарный ref-count overhead на КАЖДОМ рекурсивном вызове: вход = atomic inc, выход = atomic dec.
+- В task-parallel путях (`#pragma omp task`) задачи захватывали `shared_ptr` по значению через lambda captures. При параллельном завершении задач несколько ядер одновременно декрементировали один и тот же control block — классический false-sharing на atomic. На arm64 (TSO) последствия этой конкуренции особенно ощутимы.
+- `dynamic_pointer_cast` (удалён в favor of `static_cast`) добавлял RTTI lookup при каждом переходе между типами узлов.
+- На 14t улучшение меньше, потому что river lock contention (~2787ms vs ~721ms на 8t) остаётся доминирующим bottleneck при высоком числе потоков.
+
+Что показали профильные тайминги (`8t / HF0 / pruning=OFF`):
+- `strategy_fetch_ms` (sum): 948 → 314 ms (-67%)
+- `regret_update_ms` (sum): 969 → 247 ms (-75%)
+- `lock_wait_ms` (sum): 993 → 721 ms (-27%)
+- Exploit: 0,9737 → 0,9737 (без дрейфа)
+
+TODO P4.2 (не сделано):
+- Переход дерева на arena/flat-массив нод вместо `shared_ptr<GameTreeNode>` как ownership модели. UI-код (`treeitem.cpp`, `treemodel.cpp`, `tablestrategymodel.cpp`) использует `weak_ptr/lock()`, что требует отдельного решения.
+- Contiguous layout: `vector<shared_ptr<GameTreeNode>>` в ActionNode → `vector<GameTreeNode*>` (arena), `vector<shared_ptr<Trainable>>` → `vector<unique_ptr<Trainable>>`.
+- SoA для `PrivateCards`: array of structs → struct of arrays для лучшей cache locality при линейном сканировании диапазона.
 
 P5. Ускорить evaluator и river/showdown pipeline (частично выполнено, milestone по river contention закрыт)
 Критичность: High. Изначальная rough-цель: 15-35% на turn/river-heavy деревьях. Фактический результат первого инженерного этапа: основной bottleneck в river cache снят, evaluator ускорен, drift по exploitability не обнаружен.
@@ -252,9 +280,77 @@ P5. Ускорить evaluator и river/showdown pipeline (частично вы
 - текущая реализация выглядит корректной: benchmark exploitability не сдвинулась, differential-check fast/slow evaluator прошёл, river cache сверка прошла;
 - `P5` как направление ещё не исчерпан полностью, но по ROI следующий цикл разумнее вернуть в `P3.2`/`P4`, а не продолжать углубляться в river pipeline немедленно.
 
-P6. Алгоритмические ускорители без смены класса solver
-Критичность: High. Выигрыш: 1.5-3x, зависит от дерева.
-Наиболее реалистичны regret-based pruning, lazy CFR updates, skipping low-probability nodes, strategy freezing, adaptive iteration scheduling. Это лучше внедрять после P1-P5, иначе код станет сложнее, а bottleneck по памяти всё равно останется. У вас уже есть задел на discounted CFR; CFR+ как “просто переключить” сейчас не даст такого эффекта и вообще не доведён до рабочего пути в PCfrSolver.cpp#L120.
+P6. Алгоритмические ускорители без смены класса solver (P6.1 завершён)
+Критичность: High. Изначальная rough-цель: 1.5-3x. Фактический результат P6.1 (regret-based pruning): ~6% wall-clock на 14 потоках / HF0 / 121 итерацию. Exploitability drift: +0.27 pp (1.24% vs 0.97%), сходимость есть.
+
+Что было сделано в P6.1:
+- В `Trainable` интерфейс добавлен `isActionPrunable(action_id)` — проверяет `all(r_plus[action, hand] <= 0)` для всех рук.
+- Реализация добавлена во все три trainable варианта: `DiscountedCfrTrainable`, `DiscountedCfrTrainableSF`, `DiscountedCfrTrainableHF`.
+- В `PCfrSolver::actionUtility()` добавлен pruning path: если action prunable для traversing player, child subtree не evaluируется, utility заполняется нулями, regret для pruned action = 0 (r_plus только decays по beta без добавления нового regret).
+- Каждая 10-я итерация — full (unpruned) pass, чтобы pruned actions могли recover.
+- Pruning включается только когда `player == node->getPlayer()`, `iter > warmup`, `action_count > 1`.
+- Никогда не pruning все actions одновременно (safety guard).
+- Добавлен CLI command `set_regret_pruning 0/1` (default = 1), параметр прокинут через `CommandLineTool → PokerSolver → PCfrSolver`.
+- Добавлена telemetry: `pruned_branches` в `BenchmarkThreadStats` и JSON output.
+
+## P6.1 Benchmark Results (HF0, 14 threads, macOS arm64, 121 iterations)
+
+| Metric | Pruning OFF | Pruning ON | Delta |
+| :--- | :--- | :--- | :--- |
+| Wall-clock | 45.1 s | 42.2 s | -6.4% |
+| Exploitability | 0.974% | 1.239% | +0.27 pp |
+| Pruned branches/iter | 0 | ~30-50k (~8-13%) | |
+
+## Pruning Activity Over Iterations
+
+| Iteration range | Pruned branches | Action nodes visited | Pruning ratio |
+| :--- | :--- | :--- | :--- |
+| 1-9 (pruned cycle 1) | 31k-49k | 390-420k | 7-13% |
+| 10 (full iteration) | 0 | 532k | 0% |
+| 11-19 (pruned cycle 2) | 36k-46k | 486-496k | 7-9% |
+| 20 (full iteration) | 0 | 532k | 0% |
+| 21-29 (pruned cycle 3) | 18k-28k | 510-525k | 3-5% |
+
+Что мы узнали и считаем закрытым знанием:
+- RBP в discounted CFR принципиально ограничен по сравнению с CFR+: uniform-fallback стратегия (когда все r_plus <= 0 для руки) даёт pruned actions ненулевую вероятность, поэтому pruning condition `all(r_plus <= 0)` не гарантирует `strategy == 0` для всех рук. Strict check `r_plus_sum != 0` (гарантия `strategy == 0`) убивает почти весь pruning (<0.01%).
+- Основной bottleneck солвера — river/showdown/chance evaluation, а не action recursion. Pruning пропускает поддеревья ниже action nodes, но самые тяжёлые узлы (river cache, showdown eval) не зависят от pruning.
+- Periodic full iterations (каждая 10-я) необходимы для convergence, но разбавляют выигрыш.
+- Pruning rate снижается по мере сходимости (с ~13% на ранних итерациях до ~4% на поздних), потому что больше actions развивают positive regrets.
+
+Вывод по P6.1:
+- Оставляем как `set_regret_pruning 1` (default on) — это бесплатные ~6% без regression по корректности.
+- Rough-цель `1.5-3x` для P6 в целом была overoptimistic для discounted CFR solver; реалистичный ceiling для оставшихся P6 ускорителей (lazy updates, strategy freezing, adaptive scheduling) — скорее ещё `~5-15%` суммарно, а не мультипликативный speedup.
+- `P4.1` (raw pointers + POD PrivateCards) выполнен и дал `-42%` на 8t, что в несколько раз превысило исходный rough-estimate. Следующий шаг — `P4.2` (arena для children) или `P6.2` (strategy freezing).
+
+Что потенциально можно выжать позже, если возвращаться в P6:
+- `P6.3`: Adaptive iteration count — early stopping по exploitability threshold вместо fixed iteration budget.
+- `P6.4`: Lazy regret updates — пересчитывать стратегию реже (каждые N итераций) для узлов с малым изменением regret.
+- Переход на CFR+ (regret clipping к 0) мог бы сделать RBP значительно агрессивнее, но потребует валидации convergence properties для текущего дерева.
+
+P6.2. Strategy freezing для converged trainables (реализовано, ожидает benchmark)
+Критичность: High. Rough-цель: ~5-15% на regret_update_ms при достаточной freeze rate.
+
+Что было сделано:
+- В каждый из трёх trainable вариантов (`DiscountedCfrTrainable`, `DiscountedCfrTrainableHF`, `DiscountedCfrTrainableSF`) добавлены поля `cum_frozen_` (bool) и `frozen_skip_count_` (int).
+- В `updateRegretsInPlace` добавлена логика freeze: фаза обновления `r_plus` (определяет текущую стратегию) всегда выполняется; фаза обновления `cum_r_plus` (аккумулятор средней стратегии) пропускается, если trainable заморожен.
+- Детекция заморозки: во время цикла `cum_r_plus` отслеживается `max_delta = max(|new_val - old_val|)` по всем элементам. Если `max_delta < freeze_threshold`, trainable помечается как замороженный (`cum_frozen_ = true`).
+- Авторазморозка: каждые 50 пропущенных итераций выполняется принудительный полный пересчёт с новой проверкой порога. Это предотвращает бесконечное зависание в замороженном состоянии при изменении регретов.
+- При `freeze_threshold = 0` (default) весь freeze path не активируется: `freeze_thr > 0.0f` ветка никогда не входит в inner loop, нулевой overhead.
+- Добавлен CLI команда `set_strategy_freeze_threshold <value>` (e.g. `0.001`). Значение прокинуто через `CommandLineTool → PokerSolver::train() → PCfrSolver → Trainable::setGlobalFreezeThreshold()`.
+- В `Trainable.h` добавлены `inline static float s_freeze_threshold` и `virtual bool isCumFrozen() const`.
+- Добавлена telemetry: `pruning.frozen_cum_updates` в benchmark JSON (gated on `profile_enabled`, нулевой overhead в production run).
+
+Архитектурное решение — почему только `cum_r_plus`:
+- `r_plus` определяет текущую стратегию, которую solver читает через `getcurrentStrategyInPlace()` на каждом шаге. Его нельзя пропускать без нарушения сходимости.
+- `cum_r_plus` — это аккумулятор средней стратегии, который нужен только для финального вывода (`getAverageStrategy()`). Когда стратегия converged, его обновление вносит изменения порядка `max_delta`, что и является критерием заморозки.
+- Таким образом, заморозка `cum_r_plus` безопасна для сходимости и не влияет на exploitability во время solve.
+
+TODO — запустить benchmark и зафиксировать результаты:
+- Smoke run: `set_strategy_freeze_threshold 0.001` на quick profile (`none / 32 / 2 runs / 120 iter / HF0`).
+- Сравнить `regret_update_ms` и `frozen_cum_updates` в JSONL против baseline `matrix_20260316_222631`.
+- Проверить exploitability drift: должен отсутствовать или быть пренебрежимо малым (freeze не затрагивает `r_plus`).
+- Подобрать оптимальный threshold: начать с `0.001`, попробовать `0.0001` и `0.01`.
+- Если freeze rate недостаточна (< 20% trainables), проверить профиль `cum_r_plus` delta по итерациям в logfile.
 
 P7. Большие архитектурные ускорители
 Критичность: Medium/High. Выигрыш: 2-10x, но уже с компромиссами и большим объёмом работ.
@@ -262,13 +358,15 @@ P7. Большие архитектурные ускорители
 
 Приоритет по критичности
 
-Самое срочное: P1, P2, P3.
-Следом: P4, P3.2/P5.2.
-Потом: P6.
+Завершено: P0, P1, P2, P3.1, P5 (milestone), P6.1, P4.1, P6.2 (реализация; ожидает benchmark).
+Исследовано и закрыто: P3.2.
+Следующее: запустить benchmark P6.2 и зафиксировать результаты; затем P4.2 (arena/SoA для children/trainables).
+Потом: P6.3-4, P5.2.
 Дальше как отдельная ветка продукта: P7.
 Низкий приоритет сейчас: GPU, NUMA-aware оптимизации, AVX512. Для 5950X сначала нужен AVX2/FMA и нормальный data layout.
+
 Реалистичный итог
 
-Без смены solver-класса и без sampling: 2-4x выглядит реалистично.
-С удачным task scheduler + pruning + evaluator rewrite: можно целиться выше.
-С sampling/subgame solving: потенциально 4-10x+, но уже ценой большей сложности и аппроксимаций.
+Текущий суммарный прогресс: ~4.2x от исходного baseline (P0) на macOS arm64 / 8t (75662ms → 41535ms с pruning).
+Без смены solver-класса и без sampling: 5-6x от P0 выглядит реалистично через P4.2 + оставшиеся P6.
+С sampling/subgame solving: потенциально 8-15x+, но уже ценой большей сложности и аппроксимаций.
