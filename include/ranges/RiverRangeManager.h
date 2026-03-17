@@ -10,6 +10,7 @@
 #include <include/compairer/Compairer.h>
 #include <include/compairer/Dic5Compairer.h>
 #include <mutex>
+#include <shared_mutex>
 #include <memory>
 #include <atomic>
 #include <cstdint>
@@ -37,7 +38,7 @@ public:
     enum { NUM_SHARDS = 128 };
     
     struct Shard {
-        mutable std::mutex lock;
+        mutable std::shared_timed_mutex lock;  // shared_lock for reads, unique_lock for writes
         std::unordered_map<uint64_t, std::shared_ptr<std::vector<RiverCombs>>> map;
     };
 

@@ -205,6 +205,11 @@ void CommandLineTool::processCommand(string input) {
         if(this->strategy_freeze_threshold < 0.0f) {
             throw runtime_error(tfm::format("strategy_freeze_threshold must be >= 0: %s", paramstr));
         }
+    }else if(command == "set_use_cfr_plus"){
+        this->use_cfr_plus = stoi(paramstr);
+        if(this->use_cfr_plus != 0 && this->use_cfr_plus != 1) {
+            throw runtime_error(tfm::format("use_cfr_plus must be 0 or 1: %s", paramstr));
+        }
     }else if(command == "set_print_interval"){
         this->print_interval = stoi(paramstr);
     }else if(command == "start_solve"){
@@ -222,6 +227,7 @@ void CommandLineTool::processCommand(string input) {
             benchmark_setup["task_parallelism"] = this->task_parallelism;
             benchmark_setup["regret_pruning"] = this->regret_pruning;
             benchmark_setup["strategy_freeze_threshold"] = this->strategy_freeze_threshold;
+            benchmark_setup["use_cfr_plus"] = this->use_cfr_plus;
             benchmark_setup["build_tree_ms"] = this->last_build_tree_ms;
             benchmark_setup["range_ip"] = this->range_ip;
             benchmark_setup["range_oop"] = this->range_oop;
@@ -244,7 +250,8 @@ void CommandLineTool::processCommand(string input) {
                 this->profile_mode,
                 this->task_parallelism != 0,
                 this->regret_pruning != 0,
-                this->strategy_freeze_threshold
+                this->strategy_freeze_threshold,
+                this->use_cfr_plus != 0
         );
         if(this->profile_mode){
             json solve_done;

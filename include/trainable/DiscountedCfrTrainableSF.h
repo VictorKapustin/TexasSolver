@@ -49,7 +49,7 @@ public:
 
     void setEv(const vector<float>& evs) override;
 
-    void copyStrategy(shared_ptr<Trainable> other_trainable);
+    void copyStrategy(Trainable* other_trainable) override;
 
     json dump_strategy(bool with_state) override;
 

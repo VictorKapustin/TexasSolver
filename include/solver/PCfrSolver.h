@@ -201,7 +201,8 @@ public:
             bool profile_enabled = false,
             bool task_parallelism = false,
             bool regret_pruning = true,
-            float strategy_freeze_threshold = 0.0f
+            float strategy_freeze_threshold = 0.0f,
+            bool use_cfr_plus = false
     );
     ~PCfrSolver();
     void train() override;
@@ -230,6 +231,7 @@ private:
     bool task_parallelism = false;
     bool regret_pruning = true;
     float strategy_freeze_threshold_ = 0.0f;
+    bool use_cfr_plus = false;
     bool distributing_task = false;
     bool collecting_statics = false;
 

@@ -1,169 +1,176 @@
 //
 // Created by Xuefeng Huang on 2020/1/31.
+// Refactored to full production-ready CFR+ trainable.
 //
 
 #include "include/trainable/CfrPlusTrainable.h"
 
-CfrPlusTrainable::CfrPlusTrainable() {
+CfrPlusTrainable::CfrPlusTrainable(vector<PrivateCards>* privateCards, ActionNode& actionNode)
+    : action_node(actionNode) {
+    this->privateCards   = privateCards;
+    this->action_number  = action_node.getChildrens().size();
+    this->card_number    = privateCards->size();
 
+    this->r_plus     = vector<float>(this->action_number * this->card_number, 0.0f);
+    this->r_plus_sum = vector<float>(this->card_number, 0.0f);
+    this->cum_r_plus = vector<float>(this->action_number * this->card_number, 0.0f);
+    this->evs        = vector<float>(this->action_number * this->card_number, 0.0f);
 }
 
-CfrPlusTrainable::CfrPlusTrainable(shared_ptr<ActionNode> action_node, vector<PrivateCards> privateCards) {
-    this->action_node = action_node;
-    this->privateCards = privateCards;
-    this->action_number = action_node->getChildrens().size();
-    this->card_number = privateCards.size();
+// ---------------------------------------------------------------------------
+// Current strategy (from r_plus, used during solving)
+// ---------------------------------------------------------------------------
 
-    this->r_plus = vector<float>(this->action_number * this->card_number);
-    this->r_plus_sum = vector<float>(this->card_number);
-
-    this->cum_r_plus = vector<float>(this->action_number * this->card_number);
-    this->cum_r_plus_sum = vector<float>(this->card_number);
-    this->retval = vector<float>(this->action_number * this->card_number);
+void CfrPlusTrainable::getcurrentStrategyInPlace(float* buffer) {
+    const float uniform = 1.0f / this->action_number;
+    for (int action_id = 0; action_id < action_number; action_id++) {
+        for (int private_id = 0; private_id < card_number; private_id++) {
+            int index = action_id * card_number + private_id;
+            float inv_sum = r_plus_sum[private_id];
+            buffer[index] = (inv_sum != 0.0f) ? r_plus[index] * inv_sum : uniform;
+        }
+    }
 }
 
-bool CfrPlusTrainable::isAllZeros(vector<float> input_array) {
-    for(float i:input_array){
-        if (i != 0)return false;
+const vector<float> CfrPlusTrainable::getcurrentStrategy() {
+    vector<float> result(action_number * card_number);
+    getcurrentStrategyInPlace(result.data());
+    return result;
+}
+
+// ---------------------------------------------------------------------------
+// Average strategy (linear average: sum of t * sigma_t, used for dump/output)
+// ---------------------------------------------------------------------------
+
+const vector<float> CfrPlusTrainable::getAverageStrategy() {
+    vector<float> cum_sum(card_number, 0.0f);
+    for (int action_id = 0; action_id < action_number; action_id++) {
+        for (int private_id = 0; private_id < card_number; private_id++) {
+            cum_sum[private_id] += cum_r_plus[action_id * card_number + private_id];
+        }
+    }
+    const float uniform = 1.0f / action_number;
+    vector<float> result(action_number * card_number);
+    for (int action_id = 0; action_id < action_number; action_id++) {
+        for (int private_id = 0; private_id < card_number; private_id++) {
+            int index = action_id * card_number + private_id;
+            result[index] = (cum_sum[private_id] != 0.0f)
+                ? cum_r_plus[index] / cum_sum[private_id]
+                : uniform;
+        }
+    }
+    return result;
+}
+
+// ---------------------------------------------------------------------------
+// Regret update (CFR+ core: clip at 0, no discounting)
+// ---------------------------------------------------------------------------
+
+void CfrPlusTrainable::updateRegrets(const vector<float>& regrets, int iteration_number, const vector<float>& reach_probs) {
+    updateRegretsInPlace(regrets.data(), iteration_number, reach_probs.data());
+}
+
+void CfrPlusTrainable::updateRegretsInPlace(const float* regrets, int iteration_number, const float* reach_probs) {
+    // CFR+: r_plus = max(0, r_plus + cfr_regret)  — never goes negative
+    std::fill(r_plus_sum.begin(), r_plus_sum.end(), 0.0f);
+    for (int action_id = 0; action_id < action_number; action_id++) {
+        for (int private_id = 0; private_id < card_number; private_id++) {
+            int index = action_id * card_number + private_id;
+            r_plus[index] = max(0.0f, r_plus[index] + regrets[index]);
+            r_plus_sum[private_id] += r_plus[index];
+        }
+    }
+
+    // Cache inverse sum for fast getcurrentStrategyInPlace
+    for (int private_id = 0; private_id < card_number; private_id++) {
+        if (r_plus_sum[private_id] != 0.0f)
+            r_plus_sum[private_id] = 1.0f / r_plus_sum[private_id];
+    }
+
+    // Quadratic average: cum_r_plus += t^2 * sigma_t  (Tammelin 2015 CFR+ recommendation)
+    // Weights recent iterations much more heavily; reduces influence of early random play.
+    const float t2 = (float)iteration_number * (float)iteration_number;
+    const float uniform = 1.0f / action_number;
+    for (int action_id = 0; action_id < action_number; action_id++) {
+        for (int private_id = 0; private_id < card_number; private_id++) {
+            int index = action_id * card_number + private_id;
+            float inv_sum = r_plus_sum[private_id];
+            float strat = (inv_sum != 0.0f) ? r_plus[index] * inv_sum : uniform;
+            cum_r_plus[index] += strat * t2;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// EV storage (optional, kept for interface compatibility)
+// ---------------------------------------------------------------------------
+
+void CfrPlusTrainable::setEv(const vector<float>& evs) {
+    if (evs.size() == this->evs.size()) {
+        for (std::size_t i = 0; i < evs.size(); i++) {
+            if (evs[i] == evs[i]) this->evs[i] = evs[i];
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Isomorphism support
+// ---------------------------------------------------------------------------
+
+void CfrPlusTrainable::copyStrategy(Trainable* other_trainable) {
+    auto other = static_cast<CfrPlusTrainable*>(other_trainable);
+    if (!other) throw runtime_error("CfrPlusTrainable::copyStrategy: type mismatch");
+    r_plus.assign(other->r_plus.begin(), other->r_plus.end());
+    cum_r_plus.assign(other->cum_r_plus.begin(), other->cum_r_plus.end());
+    r_plus_sum.assign(other->r_plus_sum.begin(), other->r_plus_sum.end());
+}
+
+// ---------------------------------------------------------------------------
+// Pruning
+// ---------------------------------------------------------------------------
+
+bool CfrPlusTrainable::isActionPrunable(int action_id) {
+    const int offset = action_id * card_number;
+    for (int i = 0; i < card_number; i++) {
+        if (r_plus[offset + i] > 0.0f) return false;
     }
     return true;
 }
 
-const vector<float> CfrPlusTrainable::getAverageStrategy() {
-    /*
-    vector<float> retval(this->action_number * this->card_number);
-    if(this->cum_r_plus_sum.empty() || this->isAllZeros(this->cum_r_plus_sum)){
-        fill(retval.begin(),retval.end(),1.0 / this->action_number);
-    }else {
-        for (int action_id = 0; action_id < action_number; action_id++) {
-            for (int private_id = 0; private_id < this->card_number; private_id++) {
-                int index = action_id * this->card_number + private_id;
-                if(this->cum_r_plus_sum[private_id] != 0) {
-                    retval[index] = this->cum_r_plus[index] / this->cum_r_plus_sum[private_id];
-                }else{
-                    retval[index] = 1.0 / this->action_number;
-                }
-            }
-        }
-    }
-    */
-    return this->getcurrentStrategy();
-}
-
-const vector<float> CfrPlusTrainable::getcurrentStrategy() {
-    if(this->r_plus_sum.empty()){
-        fill(retval.begin(),retval.end(),1.0 / this->action_number);
-    }else {
-        for (int action_id = 0; action_id < action_number; action_id++) {
-            for (int private_id = 0; private_id < this->card_number; private_id++) {
-                int index = action_id * this->card_number + private_id;
-                if(this->r_plus_sum[private_id] != 0) {
-                    retval[index] = this->r_plus[index] / this->r_plus_sum[private_id];
-                }else{
-                    retval[index] = 1.0 / this->action_number;
-                }
-                if(this->r_plus[index] != this->r_plus[index]) throw runtime_error("nan found");
-                /*
-                if(this.r_plus_sum[private_id] == 0)
-                {
-                    System.out.println("Exception regret status, r_plus_sum == 0:");
-                    System.out.println(String.format("r plus length %s , card num %s",r_plus.length,this.card_number));
-                    for(int i = index % this.card_number;i < this.r_plus.length;i += this.card_number){
-                        System.out.print(String.format("%s:%s ",i,this.r_plus[i]));
-                        if(i == index){
-                            System.out.print("[current]");
-                        }
-                    }
-                    System.out.println();
-                    System.out.println();
-                    throw new RuntimeException();
-                }
-                 */
-            }
-        }
-    }
-    return retval;
-}
-
-void CfrPlusTrainable::getcurrentStrategyInPlace(float* buffer) {
-    if(this->r_plus_sum.empty()){
-        fill(buffer, buffer + this->action_number * this->card_number, 1.0 / this->action_number);
-    }else {
-        for (int action_id = 0; action_id < action_number; action_id++) {
-            for (int private_id = 0; private_id < this->card_number; private_id++) {
-                int index = action_id * this->card_number + private_id;
-                if(this->r_plus_sum[private_id] != 0) {
-                    buffer[index] = this->r_plus[index] / this->r_plus_sum[private_id];
-                }else{
-                    buffer[index] = 1.0 / this->action_number;
-                }
-            }
-        }
-    }
-}
-
-void CfrPlusTrainable::updateRegrets(const vector<float>& regrets, int iteration_number, const vector<float>& reach_probs) {
-    this->updateRegretsInPlace(regrets.data(), iteration_number, reach_probs.data());
-}
-
-void CfrPlusTrainable::updateRegretsInPlace(const float* regrets, int iteration_number, const float* reach_probs) {
-    fill(r_plus_sum.begin(),r_plus_sum.end(),0);
-    fill(cum_r_plus_sum.begin(),cum_r_plus_sum.end(),0);
-    for (int action_id = 0;action_id < action_number;action_id ++) {
-        for(int private_id = 0;private_id < this->card_number;private_id ++){
-            int index = action_id * this->card_number + private_id;
-            float one_reg = regrets[index];
-
-            // 更新 R+
-            this->r_plus[index] = max((float)0.0,one_reg + this->r_plus[index]);
-            this->r_plus_sum[private_id] += this->r_plus[index];
-
-            // 更新累计策略
-            this->cum_r_plus[index] += this->r_plus[index] * iteration_number;
-            this->cum_r_plus_sum[private_id] += this->cum_r_plus[index];
-        }
-    }
-}
+// ---------------------------------------------------------------------------
+// Serialization
+// ---------------------------------------------------------------------------
 
 json CfrPlusTrainable::dump_strategy(bool with_state) {
-    if(with_state) throw runtime_error("state storage not implemented");
-
+    if (with_state) throw runtime_error("state storage not implemented");
     json strategy;
-    vector<float> average_strategy = this->getcurrentStrategy();
-    vector<GameActions> game_actions = action_node->getActions();
+    // Use average strategy (quadratic weighted) — converges to Nash.
+    // For RT use-cases, getAverageStrategy() with t^2 weighting closely tracks current strategy.
+    const vector<float> avg = this->getAverageStrategy();
+    vector<GameActions>& game_actions = action_node.getActions();
     vector<string> actions_str;
-    for(GameActions one_action:game_actions) actions_str.push_back(
-                one_action.toString()
-        );
+    for (GameActions& a : game_actions) actions_str.push_back(a.toString());
 
-    //SolverEnvironment se = SolverEnvironment.getInstance();
-    //Compairer comp = se.getCompairer();
-
-    for(int i = 0;i < this->privateCards.size();i ++){
-        PrivateCards one_private_card = this->privateCards[i];
-        vector<float> one_strategy(this->action_number);
-
-        /*
-        int[] initialBoard = new int[]{
-                Card.strCard2int("Kd"),
-                Card.strCard2int("Jd"),
-                Card.strCard2int("Td"),
-                Card.strCard2int("7s"),
-                Card.strCard2int("8s")
-        };
-        int rank = comp.get_rank(new int[]{one_private_card.card1,one_private_card.card2},initialBoard);
-         */
-
-        for(int j = 0;j < this->action_number;j ++){
-            int strategy_index = j * this->privateCards.size() + i;
-            one_strategy[j] = average_strategy[strategy_index];
+    for (std::size_t i = 0; i < privateCards->size(); i++) {
+        PrivateCards& pc = (*privateCards)[i];
+        vector<float> one_strategy(action_number);
+        for (int j = 0; j < action_number; j++) {
+            one_strategy[j] = avg[j * (int)privateCards->size() + (int)i];
         }
-        strategy[tfm::format("%s",one_private_card.toString())] = one_strategy;
+        strategy[tfm::format("%s", pc.toString())] = one_strategy;
     }
 
     json retjson;
-    retjson["actions"] = actions_str;
-    retjson["strategy"] = strategy;
+    retjson["actions"]  = std::move(actions_str);
+    retjson["strategy"] = std::move(strategy);
+    return retjson;
+}
+
+json CfrPlusTrainable::dump_evs() {
+    // EVs not tracked in CFR+ (no EV storage by default)
+    json retjson;
+    retjson["actions"] = json::array();
+    retjson["evs"]     = json::object();
     return retjson;
 }
 

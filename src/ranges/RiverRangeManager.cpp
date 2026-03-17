@@ -60,9 +60,10 @@ RiverRangeManager::CacheStats RiverRangeManager::getStats() const {
     stats.lock_wait_ns = this->cache_lock_wait_ns.load(std::memory_order_relaxed);
     
     for (int i = 0; i < RiverRangeManager::NUM_SHARDS; ++i) {
-        std::lock_guard<std::mutex> lock1(this->p1_shards[i].lock);
+        std::shared_lock<std::shared_timed_mutex> lock1(this->p1_shards[i].lock);
         stats.p1_entries += this->p1_shards[i].map.size();
-        std::lock_guard<std::mutex> lock2(this->p2_shards[i].lock);
+        lock1.unlock();
+        std::shared_lock<std::shared_timed_mutex> lock2(this->p2_shards[i].lock);
         stats.p2_entries += this->p2_shards[i].map.size();
     }
     return stats;
@@ -96,7 +97,7 @@ RiverRangeManager::getRiverCombos(int player, const vector<PrivateCards> &preflo
 
     {
         uint64_t lock_wait_start = steadyNowNs();
-        std::lock_guard<std::mutex> lock(shard.lock);
+        std::shared_lock<std::shared_timed_mutex> rlock(shard.lock);
         this->cache_lock_wait_ns.fetch_add(steadyNowNs() - lock_wait_start, std::memory_order_relaxed);
         auto lookup_it = shard.map.find(key);
         if (lookup_it != shard.map.end()) {
@@ -137,7 +138,7 @@ RiverRangeManager::getRiverCombos(int player, const vector<PrivateCards> &preflo
     this->cache_build_ns.fetch_add(steadyNowNs() - build_start, std::memory_order_relaxed);
 
     uint64_t lock_wait_start = steadyNowNs();
-    std::lock_guard<std::mutex> lock(shard.lock);
+    std::unique_lock<std::shared_timed_mutex> wlock(shard.lock);
     this->cache_lock_wait_ns.fetch_add(steadyNowNs() - lock_wait_start, std::memory_order_relaxed);
     auto existing_it = shard.map.find(key);
     shared_ptr<vector<RiverCombs>> stored_river_combos;

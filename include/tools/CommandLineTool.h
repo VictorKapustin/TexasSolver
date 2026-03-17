@@ -46,6 +46,7 @@ private:
     int task_parallelism=1;
     int regret_pruning=1;
     float strategy_freeze_threshold=0.0f;
+    int use_cfr_plus=0;
     int print_interval=10;
     int dump_rounds = 1;
     bool profile_mode = false;

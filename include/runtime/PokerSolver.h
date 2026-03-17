@@ -48,7 +48,8 @@ public:
             bool profile_enabled = false,
             bool task_parallelism = false,
             bool regret_pruning = true,
-            float strategy_freeze_threshold = 0.0f
+            float strategy_freeze_threshold = 0.0f,
+            bool use_cfr_plus = false
             );
     void stop();
     long long estimate_tree_memory(QString range1,QString range2,QString board,int use_halffloats=0);

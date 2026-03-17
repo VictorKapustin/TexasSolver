@@ -28,7 +28,7 @@ public:
     virtual void updateRegrets(const vector<float>& regrets,int iteration_number,const vector<float>& reach_probs) = 0;
     virtual void updateRegretsInPlace(const float* regrets, int iteration_number, const float* reach_probs) = 0;
     virtual void setEv(const vector<float>& evs) = 0;
-    virtual void copyStrategy(shared_ptr<Trainable> other_trainable) = 0;
+    virtual void copyStrategy(Trainable* other_trainable) = 0;
     virtual json dump_strategy(bool with_state) = 0;
     virtual json dump_evs() = 0;
     virtual TrainableType get_type() = 0;

@@ -52,8 +52,8 @@ const vector<float> DiscountedCfrTrainable::getcurrentStrategy() {
     return this->getcurrentStrategyNoCache();
 }
 
-void DiscountedCfrTrainable::copyStrategy(shared_ptr<Trainable> other_trainable){
-    shared_ptr<DiscountedCfrTrainable> trainable = dynamic_pointer_cast<DiscountedCfrTrainable>(other_trainable);
+void DiscountedCfrTrainable::copyStrategy(Trainable* other_trainable){
+    DiscountedCfrTrainable* trainable = static_cast<DiscountedCfrTrainable*>(other_trainable);
     this->r_plus.assign(trainable->r_plus.begin(),trainable->r_plus.end());
     this->cum_r_plus.assign(trainable->cum_r_plus.begin(),trainable->cum_r_plus.end());
     this->r_plus_sum.assign(trainable->r_plus_sum.begin(), trainable->r_plus_sum.end());

@@ -35,7 +35,7 @@ PCfrSolver::PCfrSolver(shared_ptr<GameTree> tree, vector<PrivateCards> range1, v
                      vector<int> initial_board, shared_ptr<Compairer> compairer, Deck deck, int iteration_number, bool debug,
                      int print_interval, string logfile, string trainer, Solver::MonteCarolAlg monteCarolAlg,int warmup,
                      float accuracy,bool use_isomorphism,int use_halffloats,int num_threads,bool profile_enabled,
-                     bool task_parallelism,bool regret_pruning,float strategy_freeze_threshold)
+                     bool task_parallelism,bool regret_pruning,float strategy_freeze_threshold,bool use_cfr_plus)
                      :Solver(tree), rrm(compairer){
     this->initial_board = initial_board;
     this->initial_board_long = Card::boardInts2long(initial_board);
@@ -71,8 +71,17 @@ PCfrSolver::PCfrSolver(shared_ptr<GameTree> tree, vector<PrivateCards> range1, v
     this->accuracy = accuracy;
     this->profile_enabled = profile_enabled;
     this->task_parallelism = task_parallelism;
-    this->regret_pruning = regret_pruning;
     this->strategy_freeze_threshold_ = strategy_freeze_threshold;
+    this->use_cfr_plus = use_cfr_plus;
+    // Regret pruning is incompatible with CFR+: pruning locks r_plus at 0 for
+    // dominated actions, which prevents CFR+ from recovering them via the
+    // linear average. Auto-disable to avoid silent convergence regression.
+    if (use_cfr_plus && regret_pruning) {
+        qDebug().noquote() << QObject::tr("NOTE: regret_pruning auto-disabled (incompatible with CFR+)");
+        this->regret_pruning = false;
+    } else {
+        this->regret_pruning = regret_pruning;
+    }
     if(num_threads == -1){
         num_threads = omp_get_num_procs();
     }
@@ -269,11 +278,9 @@ void PCfrSolver::setTrainable(GameTreeNode* root) {
 
         int player = action_node->getPlayer();
 
-        if(this->trainer == "cfr_plus"){
-            //vector<PrivateCards> player_privates = this->ranges[player];
-            //action_node->setTrainable(make_shared<CfrPlusTrainable>(action_node,player_privates));
-            throw runtime_error(tfm::format("trainer %s not supported",this->trainer));
-        }else if(this->trainer == "discounted_cfr"){
+        if(this->trainer == "cfr_plus" || this->trainer == "discounted_cfr"){
+            // actual trainable type (DCFR vs CFR+) is selected lazily in getTrainable()
+            // based on the use_cfr_plus flag; both branches share the same slot layout
             vector<PrivateCards>* player_privates = &this->ranges[player];
             //action_node->setTrainable(make_shared<DiscountedCfrTrainable>(action_node,player_privates));
             int num;
@@ -292,7 +299,7 @@ void PCfrSolver::setTrainable(GameTreeNode* root) {
             }else{
                 throw runtime_error("gap not understand");
             }
-            action_node->setTrainable(vector<shared_ptr<Trainable>>(num),player_privates);
+            action_node->setTrainable(num,player_privates);
         }else{
             throw runtime_error(tfm::format("trainer %s not found",this->trainer));
         }
@@ -484,7 +491,7 @@ void PCfrSolver::chanceUtility(int player, ChanceNode* node, const float* reach_
         }
     } else {
         if(!omp_in_parallel()) {
-            #pragma omp parallel for schedule(static)
+            #pragma omp parallel for schedule(dynamic,1)
             for(int valid_ind = 0; valid_ind < static_cast<int>(valid_cards.size()); valid_ind++) {
                 evaluate_valid_card(static_cast<std::size_t>(valid_ind));
             }
@@ -554,8 +561,8 @@ void PCfrSolver::actionUtility(int player, ActionNode* node, const float* reach_
     vector<GameActions>& actions = node->getActions();
     int action_count = actions.size();
 
-    shared_ptr<Trainable> trainable = node->getTrainable(deal, true, this->use_halffloats);
-    
+    Trainable* trainable = node->getTrainable(deal, true, this->use_halffloats, this->use_cfr_plus);
+
     ThreadScratchBuffer& scratch = this->currentThreadScratchBuffer();
     
     // Push scratch space
@@ -670,9 +677,9 @@ void PCfrSolver::actionUtility(int player, ActionNode* node, const float* reach_
                 trainable->updateRegretsInPlace(regrets, iter + 1, reach_probs);
             } else if (iter == this->warmup) {
                 vector<int> deals = this->getAllAbstractionDeal(deal);
-                shared_ptr<Trainable> standard_trainable = nullptr;
+                Trainable* standard_trainable = nullptr;
                 for (int one_deal : deals) {
-                    shared_ptr<Trainable> one_trainable = node->getTrainable(one_deal, true, this->use_halffloats);
+                    Trainable* one_trainable = node->getTrainable(one_deal, true, this->use_halffloats, this->use_cfr_plus);
                     if (standard_trainable == nullptr) {
                         one_trainable->updateRegretsInPlace(regrets, iter + 1, reach_probs);
                         standard_trainable = one_trainable;
@@ -920,7 +927,7 @@ void PCfrSolver::train() {
         this->findGameSpecificIsomorphisms();
     }
 
-    BestResponse br = BestResponse(player_privates,this->player_number,this->pcm,this->rrm,this->deck,this->debug,this->color_iso_offset,this->split_round,this->num_threads,this->use_halffloats);
+    BestResponse br = BestResponse(player_privates,this->player_number,this->pcm,this->rrm,this->deck,this->debug,this->color_iso_offset,this->split_round,this->num_threads,this->use_halffloats,this->use_cfr_plus);
 
     vector<vector<float>> reach_probs = this->getReachProbs();
     ofstream fileWriter;
@@ -942,6 +949,7 @@ void PCfrSolver::train() {
         session_meta["accuracy_target"] = this->accuracy;
         session_meta["use_isomorphism"] = this->use_isomorphism;
         session_meta["use_halffloats"] = this->use_halffloats;
+        session_meta["use_cfr_plus"] = this->use_cfr_plus;
         session_meta["task_parallelism"] = this->task_parallelism;
         session_meta["range_sizes"] = {this->range1.size(), this->range2.size()};
         session_meta["root_round"] = GameTreeNode::gameRound2int(this->root_round);
@@ -1164,7 +1172,7 @@ void PCfrSolver::reConvertJson(const shared_ptr<GameTreeNode>& node,json& strate
         if((*retval)["childrens"].empty()){
             (*retval).erase("childrens");
         }
-        shared_ptr<Trainable> trainable = one_node->getTrainable(deal,false);
+        Trainable* trainable = one_node->getTrainable(deal,false);
         if(trainable != nullptr) {
             (*retval)["strategy"] = trainable->dump_strategy(false);
             for(vector<int> one_exchange:exchange_color_list){
@@ -1313,7 +1321,7 @@ vector<vector<vector<float>>> PCfrSolver::get_strategy(shared_ptr<ActionNode> no
         }
         deal = new_deal;
     }
-    shared_ptr<Trainable> trainable = node->getTrainable(deal,true,this->use_halffloats);
+    Trainable* trainable = node->getTrainable(deal,true,this->use_halffloats,this->use_cfr_plus);
     json retjson = trainable->dump_strategy(false);;
 
     for(vector<int> one_exchange:exchange_color_list){
@@ -1401,7 +1409,7 @@ vector<vector<vector<float>>> PCfrSolver::get_evs(shared_ptr<ActionNode> node,ve
         }
         deal = new_deal;
     }
-    shared_ptr<Trainable> trainable = node->getTrainable(deal,false,this->use_halffloats);
+    Trainable* trainable = node->getTrainable(deal,false,this->use_halffloats);
     if(trainable == nullptr) {
         return ret_evs;
     }

@@ -5,6 +5,7 @@
 #include "include/nodes/ActionNode.h"
 
 #include <utility>
+#include <include/trainable/CfrPlusTrainable.h>
 #include <include/trainable/DiscountedCfrTrainable.h>
 #include <include/trainable/DiscountedCfrTrainableHF.h>
 #include <include/trainable/DiscountedCfrTrainableSF.h>
@@ -37,28 +38,33 @@ GameTreeNode::GameTreeNodeType ActionNode::getType() {
     return ACTION;
 }
 
-shared_ptr<Trainable> ActionNode::getTrainable(int i,bool create_on_site, int use_halffloats) {
+Trainable* ActionNode::getTrainable(int i,bool create_on_site, int use_halffloats, bool use_cfr_plus) {
     if(i > this->trainables.size()){
         throw runtime_error(tfm::format("size unacceptable %s > %s ",i,this->trainables.size()));
     }
     if(this->trainables[i] == nullptr && create_on_site){
-        switch (use_halffloats){
-        case 0:
-            this->trainables[i] = make_shared<DiscountedCfrTrainable>(player_privates,*this);
-            break;
-        case 1:
-            this->trainables[i] = make_shared<DiscountedCfrTrainableSF>(player_privates,*this);
-            break;
-        case 2:
-            this->trainables[i] = make_shared<DiscountedCfrTrainableHF>(player_privates,*this);
-            break;
+        if (use_cfr_plus) {
+            this->trainables[i] = make_unique<CfrPlusTrainable>(player_privates,*this);
+        } else {
+            switch (use_halffloats){
+            case 0:
+                this->trainables[i] = make_unique<DiscountedCfrTrainable>(player_privates,*this);
+                break;
+            case 1:
+                this->trainables[i] = make_unique<DiscountedCfrTrainableSF>(player_privates,*this);
+                break;
+            case 2:
+                this->trainables[i] = make_unique<DiscountedCfrTrainableHF>(player_privates,*this);
+                break;
+            }
         }
     }
-    return this->trainables[i];
+    return this->trainables[i].get();
 }
 
-void ActionNode::setTrainable(vector<shared_ptr<Trainable>> trainables,vector<PrivateCards>* player_privates) {
-    this->trainables = trainables;
+void ActionNode::setTrainable(int num,vector<PrivateCards>* player_privates) {
+    this->trainables.clear();
+    this->trainables.resize(num);
     this->player_privates = player_privates;
 }
 
